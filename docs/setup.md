@@ -66,7 +66,11 @@ If you already attached an earlier version inline and now hit `Policy exceeding 
 limit can't be saved`, switch to the managed-policy commands above and delete the inline one
 (`aws iam delete-user-policy`) so you aren't carrying both.
 
-Four of this policy's statements are non-obvious:
+Five of this policy's statements are non-obvious:
+
+- **`InvokeModelsForPreflight`** — the playground check in step 4 invokes as your identity.
+  `InvokeModel`, `InvokeModelWithResponseStream`, `Converse`, and `ConverseStream` need
+  `Resource: "*"`. An inference-profile ID does not accept a policy scoped to one model ARN.
 
 - **`DiscoverModelCatalog`** — `bedrock:ListFoundationModels` / `ListInferenceProfiles` are
   catalog-wide reads with no per-model ARN to scope to, so they need `Resource: "*"`. Without them,
@@ -171,7 +175,7 @@ aws bedrock list-foundation-models --region <REGION> \
    model (Nova Pro, Nova Lite), which get a much larger requests-per-minute allowance. A Nova pass
    is not a Sonnet pass. This harness is written for Claude Sonnet 4.6.
 
-Prefer a bare model ID until you have confirmed the model requires a profile.
+Pass an inference-profile ID to this harness, for example `us.anthropic.claude-sonnet-4-6`. That is the ID in the README deploy command. A bare model ID fails for current Claude models with the on-demand error in point 2.
 
 ## 5. Deploy
 
@@ -196,15 +200,11 @@ See `docs/runbook.md`.
 ## Tearing down
 
 ```bash
-AWS_REGION=<region> npx cdk destroy
+AWS_REGION=us-east-1 npx cdk destroy -c nameSuffix=-use1
 ```
 
-A stack deployed with `-c nameSuffix=<suffix>` must be destroyed with the identical context and
-region, or you target a different deployment:
-
-```bash
-AWS_REGION=<region> npx cdk destroy -c nameSuffix=<suffix>
-```
+That is the deployment from step 5. Destroying it needs the same region and the same
+`-c nameSuffix`. A stack that was deployed without a suffix is destroyed without `-c nameSuffix`.
 
 Everything in the stack is destroy-on-delete. The bootstrap resources (`CDKToolkit` stack, staging
 bucket, ECR repo, the `cdk-hnb659fds-*` roles) are CDK's own scaffolding, not this project's, and

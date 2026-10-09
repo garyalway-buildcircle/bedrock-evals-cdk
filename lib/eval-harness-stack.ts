@@ -6,7 +6,7 @@ import * as iam from "aws-cdk-lib/aws-iam"
 import * as s3 from "aws-cdk-lib/aws-s3"
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment"
 import type { Construct } from "constructs"
-import { discoverPrompts, inputVariableNames, logicalId, validateNameSuffix } from "./prompts"
+import { deployedPromptText, discoverPrompts, inputVariableNames, logicalId, validateNameSuffix } from "./prompts"
 
 /**
  * Infra only. One Bedrock Prompt per prompts/ directory, two shared scratch buckets
@@ -74,14 +74,21 @@ export class EvalHarnessStack extends cdk.Stack {
           ArnLike: { "aws:SourceArn": `arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:evaluation-job/*` },
         },
       }),
-      description: "Assumed by Bedrock Evaluation Jobs to read the dataset and write results for this project only.",
+      description: "Assumed by Bedrock evaluation jobs to read the dataset, write results, and invoke models.",
     })
     datasetBucket.grantRead(evalJobRole)
+    // The service role needs to read the output bucket back (GetObject, ListBucket, GetBucketLocation), not only write it.
+    outputBucket.grantRead(evalJobRole)
     outputBucket.grantWrite(evalJobRole)
     evalJobRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "InvokeModelsForEval",
-        actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        actions: [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:GetInferenceProfile",
+          "bedrock:ListInferenceProfiles",
+        ],
         // CreateEvaluationJob rejects a policy scoped to model ARNs. See docs/setup.md.
         resources: ["*"],
       }),
@@ -104,6 +111,9 @@ export class EvalHarnessStack extends cdk.Stack {
       const systemPromptText = readPromptFile(definition.dir, definition.id, "system-prompt.txt")
       const userMessageTemplate = readPromptFile(definition.dir, definition.id, "user-message-template.txt")
       const inputVariables = inputVariableNames(userMessageTemplate, definition.id).map((name) => ({ name }))
+      // Evaluation datasets have one prompt string. This user message is that string, with the
+      // placeholder left in, so invoking the Prompt resource sends the same text as a job.
+      const userMessage = deployedPromptText(systemPromptText, userMessageTemplate)
 
       const prompt = new bedrock.CfnPrompt(this, `Prompt${suffix}`, {
         name: definition.promptName ?? definition.id,
@@ -116,8 +126,7 @@ export class EvalHarnessStack extends cdk.Stack {
             modelId: modelUnderTestId,
             templateConfiguration: {
               chat: {
-                system: [{ text: systemPromptText }],
-                messages: [{ role: "user", content: [{ text: userMessageTemplate }] }],
+                messages: [{ role: "user", content: [{ text: userMessage }] }],
                 inputVariables,
               },
             },

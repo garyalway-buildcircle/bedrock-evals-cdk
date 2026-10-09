@@ -17,6 +17,8 @@ const DEFAULT_TEMPERATURE = 0
 const DEFAULT_MAX_TOKENS = 4000
 /** Above this, a typo is more likely than a real model limit. */
 const MAX_MAX_TOKENS = 200_000
+/** Bedrock prompt name: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_CreatePrompt.html */
+const BEDROCK_PROMPT_NAME = /^([0-9a-zA-Z][_-]?){1,100}$/
 
 /** One {{name}} in the user template is that prompt's untrusted input. Keep in sync with render-datasets.py. */
 const INPUT_VARIABLE = /\{\{([A-Za-z][A-Za-z0-9_]*)\}\}/g
@@ -32,6 +34,19 @@ export function inputVariableNames(template: string, promptId: string): string[]
     )
   }
   return names
+}
+
+/** The text an evaluation row sends, with the {{variable}} still in place. Keep in sync with render-datasets.py assemble_prompt. */
+export function deployedPromptText(systemPrompt: string, template: string): string {
+  return systemPrompt + "\n" + template.replace(/\n+$/, "")
+}
+
+function assertBedrockPromptName(promptId: string, name: string): void {
+  if (!BEDROCK_PROMPT_NAME.test(name)) {
+    throw new Error(
+      `prompts/${promptId}: Bedrock prompt name ${JSON.stringify(name)} must be 1-100 letters, digits, single hyphens, or single underscores`,
+    )
+  }
 }
 
 /**
@@ -114,6 +129,7 @@ function optionalPromptName(promptId: string, manifest: Record<string, unknown>)
   if (typeof manifest.promptName !== "string" || manifest.promptName.trim() === "") {
     throw new Error(`prompts/${promptId}/prompt.json promptName must be a non-empty string when set`)
   }
+  assertBedrockPromptName(promptId, manifest.promptName)
   return manifest.promptName
 }
 
@@ -165,6 +181,7 @@ export function discoverPrompts(promptsRoot: string): PromptDefinition[] {
   const seenNames = new Map<string, string>()
   for (const definition of definitions) {
     const promptName = definition.promptName ?? definition.id
+    if (definition.promptName === undefined) assertBedrockPromptName(definition.id, promptName)
     const previous = seenNames.get(promptName)
     if (previous !== undefined) {
       throw new Error(

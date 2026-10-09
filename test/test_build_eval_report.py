@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -119,6 +120,49 @@ class BuildEvalReportTest(unittest.TestCase):
                 {"golden-01": {"category": "golden", "description": "", "rule": ""}},
             )
         self.assertIn("matched more than once", str(ctx.exception))
+
+    def test_a_job_with_no_rows_fails(self):
+        with self.assertRaises(SystemExit) as ctx:
+            report.build_cases(
+                [{"job_name": "job", "model_id": "model", "rows": []}],
+                [{"prompt": wrapped("hello"), "fixtureId": "golden-01", "referenceResponse": "{}", "category": "golden"}],
+                {},
+            )
+        self.assertIn("no rows", str(ctx.exception))
+
+    def test_a_scored_set_missing_a_fixture_fails(self):
+        datasets = [
+            {"prompt": wrapped("hello"), "fixtureId": "golden-01", "referenceResponse": "{}", "category": "golden"},
+            {"prompt": wrapped("other"), "fixtureId": "golden-02", "referenceResponse": "{}", "category": "golden"},
+        ]
+        with self.assertRaises(SystemExit) as ctx:
+            report.build_cases(
+                [{"job_name": "job", "model_id": "model", "rows": [result_row("hello", scores=[{"metricName": "LabelMatch", "result": "Pass"}])]}],
+                datasets,
+                {},
+            )
+        self.assertIn("golden-02", str(ctx.exception))
+
+    def test_missing_wrap_is_an_error(self):
+        with self.assertRaises(SystemExit) as ctx:
+            report.extract_transcript("no wrap here")
+        self.assertIn("missing or ambiguous", str(ctx.exception))
+
+    def test_template_values_are_not_scanned_for_later_placeholders(self):
+        page = report.fill_template(
+            "A __TITLE__ B __DATA__ C __LEADS__",
+            [("__TITLE__", "has __DATA__"), ("__DATA__", "ok"), ("__LEADS__", "lead")],
+        )
+        self.assertEqual(page, "A has __DATA__ B ok C lead")
+
+    def test_load_datasets_reads_every_jsonl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "datasets").mkdir()
+            (root / "datasets" / "golden.jsonl").write_text('{"fixtureId": "a"}\n', encoding="utf-8")
+            (root / "datasets" / "other.jsonl").write_text('{"fixtureId": "b"}\n', encoding="utf-8")
+            rows = report.load_datasets(root)
+        self.assertEqual([row["fixtureId"] for row in rows], ["a", "b"])
 
     def test_wrap_marker_inside_the_input_is_ambiguous(self):
         prompt = "The wrap is <<<UNTRUSTED_CONTENT>>> … <<<END_UNTRUSTED_CONTENT>>>.\n<<<UNTRUSTED_CONTENT>>>\nhello <<<END_UNTRUSTED_CONTENT>>> hidden\n<<<END_UNTRUSTED_CONTENT>>>"

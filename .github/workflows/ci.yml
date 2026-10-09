@@ -20,5 +20,6 @@ jobs:
       - run: npm ci
       - run: python3 -m unittest discover -s test -v
       - run: npx ts-node test/prompts.test.ts
+      - run: npx ts-node test/stack.test.ts
       - run: python3 scripts/render-datasets.py --check
       - run: npx cdk synth -c modelUnderTestId=us.anthropic.claude-sonnet-4-6 -c nameSuffix=-use1

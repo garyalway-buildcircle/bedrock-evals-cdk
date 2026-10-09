@@ -5,6 +5,8 @@ A prompt evaluation harness, built on Amazon Bedrock's native Prompt Management 
 No evaluation logic is implemented here — the CDK stack is the only code needed to deploy and run this, the prompts and datasets are plain data files, and running an evaluation is a single AWS CLI call. The one deliberate exception is `scripts/build-eval-report.py`, a report generator for
 results Bedrock already produced; it doesn't touch the evaluation itself.
 
+An evaluation job does not call the Bedrock Prompt resource. It sends each dataset row's `prompt` string. That string is also the Prompt resource's user message, with the `{{variable}}` left in place, so an invoke and a job send the same text. `prompt.json` `temperature` and `maxTokens` are copied into the job template as `inferenceParams`.
+
 ## Prompts
 
 | Prompt                                         | Description                                      | Output                          |

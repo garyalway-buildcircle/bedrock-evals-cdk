@@ -9,7 +9,7 @@
     "deploy": "cdk deploy",
     "destroy": "cdk destroy",
     "diff": "cdk diff",
-    "test": "python3 -m unittest discover -s test -v && npx ts-node test/prompts.test.ts && python3 scripts/render-datasets.py --check"
+    "test": "python3 -m unittest discover -s test -v && npx ts-node test/prompts.test.ts && npx ts-node test/stack.test.ts && python3 scripts/render-datasets.py --check"
   },
   "devDependencies": {
     "aws-cdk": "^2.1145.0",

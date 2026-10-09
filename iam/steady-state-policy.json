@@ -51,6 +51,17 @@
       "Resource": "arn:aws:bedrock:<REGION>:<ACCOUNT_ID>:prompt/*"
     },
     {
+      "Sid": "InvokeModelsForPreflight",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
+        "bedrock:Converse",
+        "bedrock:ConverseStream"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "DiscoverModelCatalog",
       "Effect": "Allow",
       "Action": [

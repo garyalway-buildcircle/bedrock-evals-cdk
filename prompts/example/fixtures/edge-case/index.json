@@ -1,8 +1,8 @@
 {
   "description": "A neutral note, plus two notes that try to override the prompt. A Fail on the injection rows is a security regression.",
   "fixtures": [
-    { "file": "01-neutral-note.json", "id": "edge-01-neutral-note", "category": "neutral" },
-    { "file": "08-prompt-injection.json", "id": "edge-08-prompt-injection", "category": "injection" },
-    { "file": "09-spoofed-label.json", "id": "edge-09-spoofed-label", "category": "injection" }
+    { "file": "01-neutral-note.json", "id": "edge-01-neutral-note" },
+    { "file": "08-prompt-injection.json", "id": "edge-08-prompt-injection" },
+    { "file": "09-spoofed-label.json", "id": "edge-09-spoofed-label" }
   ]
 }

@@ -85,7 +85,7 @@ class RenderDatasetsTest(unittest.TestCase):
             index.write_text(json.dumps({"fixtures": [{"file": "01.json", "id": "golden-01"}, {"file": "02.json", "id": "golden-01"}]}))
             with self.assertRaises(SystemExit) as ctx:
                 render_datasets.render_prompt(root, check_only=True)
-        self.assertIn("fixture id", str(ctx.exception))
+        self.assertIn("more than once", str(ctx.exception))
 
     def test_identical_trimmed_text_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -174,6 +174,100 @@ class RenderDatasetsTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as ctx:
                 render_datasets.render_prompt(root, check_only=True)
         self.assertIn("101 characters", str(ctx.exception))
+
+    def test_newline_wrap_in_the_system_prompt_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            (root / "system-prompt.txt").write_text("See\n<<<UNTRUSTED_CONTENT>>>\nthe wrap.\n")
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("newline-delimited wrap", str(ctx.exception))
+
+    def test_inference_params_follow_prompt_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            (root / "prompt.json").write_text(json.dumps({"description": "t", "temperature": 0, "maxTokens": 4000}))
+            jobs = root / "eval-jobs"
+            jobs.mkdir()
+            (jobs / "golden-job.json").write_text(
+                json.dumps(
+                    {
+                        "inferenceConfig": {"models": [{"bedrockModel": {"modelIdentifier": "m"}}]},
+                        "evaluationConfig": {
+                            "automated": {
+                                "customMetricConfig": {
+                                    "customMetrics": [
+                                        {
+                                            "customMetricDefinition": {
+                                                "name": "LabelMatch",
+                                                "ratingScale": [
+                                                    {"definition": "ok", "value": {"stringValue": "Pass"}},
+                                                    {"definition": "no", "value": {"stringValue": "Fail"}},
+                                                ],
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                    }
+                )
+            )
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+            self.assertIn("inferenceParams", str(ctx.exception))
+            render_datasets.render_prompt(root, check_only=False)
+            updated = json.loads((jobs / "golden-job.json").read_text())
+            self.assertEqual(
+                updated["inferenceConfig"]["models"][0]["bedrockModel"]["inferenceParams"],
+                '{"inferenceConfig":{"maxTokens":4000,"temperature":0}}',
+            )
+
+    def test_rating_values_must_be_pass_and_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            (root / "prompt.json").write_text(json.dumps({"description": "t", "temperature": 0, "maxTokens": 4000}))
+            jobs = root / "eval-jobs"
+            jobs.mkdir()
+            (jobs / "golden-job.json").write_text(
+                json.dumps(
+                    {
+                        "inferenceConfig": {
+                            "models": [
+                                {
+                                    "bedrockModel": {
+                                        "modelIdentifier": "m",
+                                        "inferenceParams": '{"inferenceConfig":{"maxTokens":4000,"temperature":0}}',
+                                    }
+                                }
+                            ]
+                        },
+                        "evaluationConfig": {
+                            "automated": {
+                                "customMetricConfig": {
+                                    "customMetrics": [
+                                        {
+                                            "customMetricDefinition": {
+                                                "name": "Score",
+                                                "ratingScale": [
+                                                    {"definition": "low", "value": {"floatValue": 0}},
+                                                    {"definition": "high", "value": {"floatValue": 1}},
+                                                ],
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                    }
+                )
+            )
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("Pass and Fail", str(ctx.exception))
 
 
 if __name__ == "__main__":

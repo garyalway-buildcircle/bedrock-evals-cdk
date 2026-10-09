@@ -39,7 +39,7 @@
   },
   "inferenceConfig": {
     "models": [
-      { "bedrockModel": { "modelIdentifier": "<MODEL_UNDER_TEST_ID>" } }
+      { "bedrockModel": { "modelIdentifier": "<MODEL_UNDER_TEST_ID>", "inferenceParams": "{\"inferenceConfig\":{\"maxTokens\":4000,\"temperature\":0}}" } }
     ]
   },
   "outputDataConfig": {

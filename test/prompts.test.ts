@@ -4,6 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import {
   assertUniqueLogicalIds,
+  deployedPromptText,
   discoverPrompts,
   inputVariableNames,
   logicalId,
@@ -38,6 +39,11 @@ assert.throws(() => validateNameSuffix("use1"), /must be empty or start with/)
 assert.throws(() => validateNameSuffix("-Use1"), /must be empty or start with/)
 assert.throws(() => validateNameSuffix("-"), /must be empty or start with/)
 assert.throws(() => validateNameSuffix("-" + "a".repeat(22)), /too long/)
+
+assert.equal(
+  deployedPromptText("Be brief.\n", "<<<UNTRUSTED_CONTENT>>>\n{{note}}\n<<<END_UNTRUSTED_CONTENT>>>\n"),
+  "Be brief.\n\n<<<UNTRUSTED_CONTENT>>>\n{{note}}\n<<<END_UNTRUSTED_CONTENT>>>",
+)
 
 assert.deepEqual(inputVariableNames("{{note}}", "example"), ["note"])
 assert.throws(() => inputVariableNames("{{note}}\n{{note}}", "example"), /exactly one placeholder/)
@@ -95,6 +101,12 @@ assert.throws(() => inputVariableNames("{{note}} {{email}}", "example"), /exactl
   withPrompt(root, "one", { description: "a", promptName: "shared" })
   withPrompt(root, "two", { description: "b", promptName: "shared" })
   assert.throws(() => discoverPrompts(root), /both use Bedrock prompt name/)
+}
+
+{
+  const root = tempPrompts()
+  withPrompt(root, "bad.name", { description: "a" })
+  assert.throws(() => discoverPrompts(root), /Bedrock prompt name/)
 }
 
 {

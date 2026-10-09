@@ -23,7 +23,13 @@ PROMPTS = REPO / "prompts"
 # Keep in sync with lib/prompts.ts inputVariableNames.
 INPUT_VARIABLE = re.compile(r"\{\{([A-Za-z][A-Za-z0-9_]*)\}\}")
 WRAP_MARKERS = ("<<<UNTRUSTED_CONTENT>>>", "<<<END_UNTRUSTED_CONTENT>>>")
+# Keep in sync with scripts/build-eval-report.py. The newline-delimited form is the real wrap.
+OPEN_WRAP = "\n<<<UNTRUSTED_CONTENT>>>\n"
+CLOSE_WRAP = "\n<<<END_UNTRUSTED_CONTENT>>>"
 RATING_DEFINITION_LIMIT = 100
+DEFAULT_TEMPERATURE = 0
+DEFAULT_MAX_TOKENS = 4000
+MAX_MAX_TOKENS = 200_000
 
 
 def read_prompt_text(prompt_dir: Path, file_name: str) -> str:
@@ -137,6 +143,20 @@ def assemble_prompt(system_prompt: str, template: str, placeholder: str, payload
     return system_prompt + "\n" + body
 
 
+def assert_single_wrap(prompt_id: str, system_prompt: str, template: str, variable: str) -> None:
+    """The report splits on the newline-delimited wrap. It has to occur once, in the user template."""
+    if OPEN_WRAP in system_prompt or CLOSE_WRAP in system_prompt:
+        raise SystemExit(
+            f"{prompt_id}: system-prompt.txt contains the newline-delimited wrap. "
+            "Mention the markers inline, or the report cannot find the input."
+        )
+    sample = assemble_prompt(system_prompt, template, "{{" + variable + "}}", "payload")
+    if sample.count(OPEN_WRAP) != 1 or sample.count(CLOSE_WRAP) != 1 or not sample.endswith(CLOSE_WRAP):
+        raise SystemExit(
+            f"{prompt_id}: the rendered prompt must contain the newline-delimited wrap exactly once"
+        )
+
+
 def render_rows(system_prompt: str, template: str, variable: str, set_name: str, fixtures: list[dict]) -> list[dict]:
     placeholder = "{{" + variable + "}}"
     rows = []
@@ -181,9 +201,12 @@ def assert_unique_fixtures(prompt_id: str, loaded: list[tuple[str, list[dict]]])
             fixture_id = fixture["id"]
             previous_id = seen_ids.get(fixture_id)
             if previous_id is not None:
-                raise SystemExit(
-                    f"{prompt_id}: fixture id {fixture_id!r} is used in both {previous_id} and {set_name}"
+                where = (
+                    f"more than once in {set_name}"
+                    if previous_id == set_name
+                    else f"in both {previous_id} and {set_name}"
                 )
+                raise SystemExit(f"{prompt_id}: fixture id {fixture_id!r} is used {where}")
             seen_ids[fixture_id] = set_name
             text = fixture["payload"].strip()
             previous_text = seen_text.get(text)
@@ -203,17 +226,82 @@ def jsonl_row_count(path: Path) -> int:
     return max(sum(1 for line in text.splitlines() if line.strip()), 1)
 
 
-def check_eval_jobs(prompt_dir: Path) -> None:
+def job_files(prompt_dir: Path) -> list[Path]:
     jobs = prompt_dir / "eval-jobs"
     if not jobs.is_dir():
+        return []
+    return sorted(jobs.glob("*.json"))
+
+
+def load_job(prompt_dir: Path, path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as err:
+        raise SystemExit(f"{prompt_dir.name}/eval-jobs/{path.name} is not valid JSON: {err}") from err
+    if not isinstance(data, dict):
+        raise SystemExit(f"{prompt_dir.name}/eval-jobs/{path.name} must be a JSON object")
+    return data
+
+
+def inference_settings(prompt_dir: Path) -> tuple[int | float, int]:
+    """temperature and maxTokens from prompt.json. Defaults match lib/prompts.ts."""
+    path = prompt_dir / "prompt.json"
+    if not path.is_file():
+        raise SystemExit(f"{prompt_dir.name}/prompt.json is missing")
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as err:
+        raise SystemExit(f"{prompt_dir.name}/prompt.json is not valid JSON: {err}") from err
+    if not isinstance(data, dict):
+        raise SystemExit(f"{prompt_dir.name}/prompt.json must be a JSON object")
+    temperature = data.get("temperature", DEFAULT_TEMPERATURE)
+    max_tokens = data.get("maxTokens", DEFAULT_MAX_TOKENS)
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not 0 <= temperature <= 1:
+        raise SystemExit(f"{prompt_dir.name}/prompt.json temperature must be a number from 0 to 1")
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or not 1 <= max_tokens <= MAX_MAX_TOKENS:
+        raise SystemExit(
+            f"{prompt_dir.name}/prompt.json maxTokens must be an integer from 1 to {MAX_MAX_TOKENS}"
+        )
+    return temperature, max_tokens
+
+
+def inference_params(temperature: int | float, max_tokens: int) -> str:
+    """Converse-shaped parameters. Bedrock passes this string through on the evaluation invoke."""
+    return json.dumps(
+        {"inferenceConfig": {"maxTokens": max_tokens, "temperature": temperature}},
+        separators=(",", ":"),
+    )
+
+
+def sync_inference_params(prompt_dir: Path, check_only: bool) -> None:
+    """Job templates score with prompt.json's temperature and maxTokens, or --check fails."""
+    files = job_files(prompt_dir)
+    if not files:
         return
-    for path in sorted(jobs.glob("*.json")):
-        if ".local." in path.name:
+    expected = inference_params(*inference_settings(prompt_dir))
+    for path in files:
+        data = load_job(prompt_dir, path)
+        models = data.get("inferenceConfig", {}).get("models") if isinstance(data.get("inferenceConfig"), dict) else None
+        bedrock_model = models[0].get("bedrockModel") if isinstance(models, list) and models and isinstance(models[0], dict) else None
+        rel = f"{prompt_dir.name}/eval-jobs/{path.name}"
+        if not isinstance(bedrock_model, dict):
+            raise SystemExit(f"{rel}: inferenceConfig.models[0].bedrockModel is missing")
+        current = bedrock_model.get("inferenceParams")
+        if current == expected:
             continue
-        try:
-            data = json.loads(path.read_text())
-        except json.JSONDecodeError as err:
-            raise SystemExit(f"{prompt_dir.name}/eval-jobs/{path.name} is not valid JSON: {err}") from err
+        if check_only:
+            raise SystemExit(
+                f"{rel}: inferenceParams must be {expected} (prompt.json temperature and maxTokens). "
+                "Run without --check, then refresh the .local.json copy you submit."
+            )
+        bedrock_model["inferenceParams"] = expected
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=True) + "\n")
+        print(f"  updated {path.name} inferenceParams")
+
+
+def check_eval_jobs(prompt_dir: Path) -> None:
+    for path in job_files(prompt_dir):
+        data = load_job(prompt_dir, path)
         metrics = (
             data.get("evaluationConfig", {})
             .get("automated", {})
@@ -229,7 +317,13 @@ def check_eval_jobs(prompt_dir: Path) -> None:
             if not isinstance(definition, dict):
                 continue
             name = definition.get("name") or path.name
-            for scale in definition.get("ratingScale") or []:
+            scales = definition.get("ratingScale")
+            if not isinstance(scales, list) or not scales:
+                raise SystemExit(
+                    f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale must list Pass and Fail"
+                )
+            values = []
+            for scale in scales:
                 if not isinstance(scale, dict):
                     continue
                 text = scale.get("definition", "")
@@ -238,6 +332,17 @@ def check_eval_jobs(prompt_dir: Path) -> None:
                         f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale definition is "
                         f"{len(text)} characters (max {RATING_DEFINITION_LIMIT})"
                     )
+                value = scale.get("value")
+                string_value = value.get("stringValue") if isinstance(value, dict) else None
+                if string_value not in ("Pass", "Fail"):
+                    raise SystemExit(
+                        f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale values must be the strings Pass and Fail"
+                    )
+                values.append(string_value)
+            if sorted(values) != ["Fail", "Pass"]:
+                raise SystemExit(
+                    f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale must contain Pass and Fail exactly once"
+                )
 
 
 def render_prompt(prompt_dir: Path, check_only: bool) -> int:
@@ -245,10 +350,12 @@ def render_prompt(prompt_dir: Path, check_only: bool) -> int:
     system_prompt = read_prompt_text(prompt_dir, "system-prompt.txt")
     template = read_prompt_text(prompt_dir, "user-message-template.txt")
     variable = input_variable_name(template, prompt_dir.name)
+    assert_single_wrap(prompt_dir.name, system_prompt, template, variable)
     sets = fixture_sets(prompt_dir)
     loaded = [(set_dir.name, load_set(set_dir, variable, prompt_dir.name)) for set_dir in sets]
     assert_unique_fixtures(prompt_dir.name, loaded)
     check_eval_jobs(prompt_dir)
+    sync_inference_params(prompt_dir, check_only)
 
     datasets_dir = prompt_dir / "datasets"
     expected_files = {f"{set_dir.name}.jsonl" for set_dir in sets}
@@ -298,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit non-zero if datasets/*.jsonl do not match fixtures and the current prompt text. Writes nothing.",
+        help="Exit non-zero if datasets/*.jsonl or eval-job inferenceParams do not match the fixtures and prompt.json. Writes nothing.",
     )
     args = parser.parse_args(argv)
 

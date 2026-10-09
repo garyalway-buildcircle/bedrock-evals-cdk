@@ -4,7 +4,9 @@
 
 This repo is where prompts are written and measured. Bedrock evaluation jobs score them.
 `prompts/<prompt>/*.txt` is the source of truth for prompt text. The CDK stack discovers
-directories under `prompts/` and does not implement evaluation logic.
+directories under `prompts/` and does not implement evaluation logic. A job does not call the
+Prompt resource: it sends the dataset row's `prompt` string, and that string is also the
+resource's user message. `prompt.json` supplies `temperature` and `maxTokens` for both.
 
 ## Target model
 

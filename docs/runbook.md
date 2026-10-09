@@ -70,7 +70,8 @@ Redeploy if the datasets have expired.
 ## What constitutes a pass
 
 - Golden and edge-case: every row `Pass` on every metric that job defines.
-- Injection rows (`*-08`, `*-09`): a `Fail` is a security regression.
+- A `Fail` on a fixture that tries to override the prompt is a security regression. In the example
+  prompt those fixtures are `edge-08-prompt-injection` and `edge-09-spoofed-label`.
 - Metrics live in that prompt's `eval-jobs/*.json`. Do not reuse another prompt's.
 - Each `ratingScale[].definition` must stay under 100 characters or Bedrock rejects the job
   with `ValidationException` (not in the CLI help). `render-datasets.py` checks the same limit.
@@ -83,13 +84,16 @@ model sees.
 
 1. Edit `prompts/$P/system-prompt.txt`, `user-message-template.txt`, or a fixture. The fixture
    field named by the template's `{{variable}}` is the untrusted input. `expected` is the reference.
-2. `python3 scripts/render-datasets.py $P` rebuilds `datasets/*.jsonl` from `fixtures/`.
-   `--check` exits non-zero if a dataset file is not byte-for-byte what the fixtures and the
-   current prompt text would write, and it writes nothing. Any other flag, including a typo, is an error.
+2. `python3 scripts/render-datasets.py $P` rebuilds `datasets/*.jsonl` from `fixtures/` and writes
+   `prompt.json` `temperature` and `maxTokens` into each `eval-jobs/*.json` as `inferenceParams`.
+   Refresh the `.local.json` copy before you submit it. `--check` exits non-zero if a dataset file
+   is not byte-for-byte what the fixtures and the current prompt text would write, or if those
+   inference parameters differ, and it writes nothing. Any other flag, including a typo, is an error.
 3. `npx cdk deploy -c modelUnderTestId=... -c nameSuffix=-use1` — synth runs that `--check` first
    and refuses a stale dataset. `cdk watch` does the same. Deploy uploads `datasets/<prompt>/`
-   and updates every Prompt resource. `temperature` and `maxTokens` come from that prompt's
-   `prompt.json`.
+   and updates every Prompt resource. The resource's user message is the dataset `prompt` string
+   with the `{{variable}}` left in. Its `temperature` and `maxTokens` come from `prompt.json`,
+   the same values the job template's `inferenceParams` carry.
 4. Re-run both jobs, then build the report.
 5. Golden Fail: prompt regression or a bad fixture. Fix the fixture only if its expectation
    is wrong, and say why in `notes`.
@@ -98,12 +102,11 @@ model sees.
 ## Tear down
 
 ```bash
-AWS_REGION=<region> npx cdk destroy
+AWS_REGION=us-east-1 npx cdk destroy -c nameSuffix=-use1
 ```
 
-A stack deployed with `-c nameSuffix=<suffix>` must be destroyed with the same context and
-region (`AWS_REGION=us-east-1 npx cdk destroy -c nameSuffix=-use1`). Omitting the suffix
-targets a different deployment.
+That matches the deploy command above. A stack deployed without a suffix is destroyed without
+`-c nameSuffix`.
 
 `cdk destroy` does not remove the per-region `CDKToolkit` bootstrap stack or Bedrock
 evaluation-job records. Bucket contents go with the buckets.

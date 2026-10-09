@@ -26,7 +26,7 @@ def aws_json(*args):
 
 
 def load_jsonl(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
@@ -42,11 +42,10 @@ def extract_transcript(prompt):
     """
     opens = prompt.count(OPEN_WRAP)
     closes = prompt.count(CLOSE_WRAP)
-    if opens == 0 or closes == 0:
-        return ""
     if opens != 1 or closes != 1 or not prompt.endswith(CLOSE_WRAP):
         raise SystemExit(
-            "untrusted-content wrap is ambiguous; a fixture must not contain the wrap markers"
+            "untrusted-content wrap is missing or ambiguous; the rendered prompt must contain it once, "
+            "and a fixture must not contain the wrap markers"
         )
     payload = prompt[prompt.rfind(OPEN_WRAP) + len(OPEN_WRAP) : -len(CLOSE_WRAP)]
     if "<<<UNTRUSTED_CONTENT>>>" in payload or "<<<END_UNTRUSTED_CONTENT>>>" in payload:
@@ -145,8 +144,7 @@ def fetch_job_results(job_arn):
     job = aws_json("bedrock", "get-evaluation-job", "--job-identifier", job_arn)
     status = job.get("status")
     if status != "Completed":
-        print(f"warning: job {job_arn} has status {status!r}, not Completed - skipping", file=sys.stderr)
-        return None
+        raise SystemExit(f"job {job_arn} has status {status!r}, not Completed. The report was not written.")
 
     job_name = job["jobName"]
     model_id = job["inferenceConfig"]["models"][0]["bedrockModel"]["modelIdentifier"]
@@ -157,8 +155,9 @@ def fetch_job_results(job_arn):
 
     keys = list_output_keys(bucket, search_prefix)
     if not keys:
-        print(f"warning: no *_output.jsonl found for job {job_arn} under s3://{bucket}/{search_prefix}", file=sys.stderr)
-        return None
+        raise SystemExit(
+            f"no *_output.jsonl found for job {job_arn} under s3://{bucket}/{search_prefix}. The report was not written."
+        )
 
     rows = []
     with tempfile.TemporaryDirectory(prefix=f"eval-report-{job_id}-") as tmp:
@@ -261,12 +260,28 @@ def build_cases(job_results, datasets, fixture_meta):
             fid, ref, dataset_category = match_fixture(prompt, datasets, index)
             matched.append((fid, category_for(fid, dataset_category, fixture_meta), ref, row))
 
+        if not matched:
+            raise SystemExit(f"{result['job_name']}: the job returned no rows. The report was not written.")
+
         unknown = [fid for fid, *_ in matched if str(fid).startswith("unknown-fixture")]
         if unknown:
             raise SystemExit(
                 f"{result['job_name']}: {len(unknown)} of {len(matched)} row(s) did not match a dataset fixture "
                 f"({', '.join(unknown)}). Those rows would be missing from the report. "
                 "Pass the --prompt these jobs were run for."
+            )
+        categories = {category for _, category, _, _ in matched}
+        found = {fid for fid, _, _, _ in matched}
+        missing = []
+        for row in datasets:
+            fid = row.get("fixtureId")
+            category = category_for(fid, row.get("category", ""), fixture_meta)
+            if category in categories and fid not in found:
+                missing.append(str(fid))
+        if missing:
+            raise SystemExit(
+                f"{result['job_name']}: {len(missing)} fixture(s) in the scored set have no result "
+                f"({', '.join(missing)}). A short result file would otherwise look complete."
             )
 
         job_run_number = {}
@@ -314,7 +329,6 @@ def metric_names(cases):
 
 
 HTML_TEMPLATE = r"""<title>__TITLE__</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
   :root {
     --bg: #EEF1F0; --surface: #FFFFFF; --surface-2: #E3E8E6;
@@ -348,13 +362,13 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
   * { box-sizing: border-box; }
   body {
     background: var(--bg); color: var(--ink);
-    font-family: 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
+    font-family: -apple-system, 'Segoe UI', sans-serif;
     line-height: 1.5; max-width: 920px; margin: 0 auto; padding: 40px 24px 80px;
   }
   h1, h2 { text-wrap: balance; margin: 0; }
-  code, .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+  code, .mono { font-family: ui-monospace, monospace; }
   .eyebrow {
-    font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em;
+    font-family: ui-monospace, monospace; font-size: 12px; letter-spacing: 0.08em;
     text-transform: uppercase; color: var(--accent); font-weight: 600;
   }
   header.page {
@@ -370,7 +384,7 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
   .prog-track { display: flex; align-items: center; gap: 8px; }
   .prog-step { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; }
   .prog-score {
-    font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 20px;
+    font-family: ui-monospace, monospace; font-weight: 600; font-size: 20px;
     font-variant-numeric: tabular-nums; width: 100%; text-align: center; padding: 6px 0; border-radius: 6px;
   }
   .prog-score.pass-full { background: var(--pass-soft); color: var(--pass); }
@@ -385,9 +399,9 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
   .case > summary::-webkit-details-marker { display: none; }
   .case > summary .chevron { font-size: 11px; color: var(--ink-muted); transition: transform 0.15s ease; flex-shrink: 0; }
   .case[open] > summary .chevron { transform: rotate(90deg); }
-  .case > summary .id { font-family: 'IBM Plex Mono', monospace; font-size: 13.5px; font-weight: 500; flex: 1; min-width: 0; }
+  .case > summary .id { font-family: ui-monospace, monospace; font-size: 13.5px; font-weight: 500; flex: 1; min-width: 0; }
   .pill {
-    font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; letter-spacing: 0.03em;
+    font-family: ui-monospace, monospace; font-size: 11px; font-weight: 600; letter-spacing: 0.03em;
     padding: 3px 9px; border-radius: 20px; flex-shrink: 0;
   }
   .pill.Pass { background: var(--pass-soft); color: var(--pass); }
@@ -395,7 +409,7 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
   .version-chips { display: flex; gap: 5px; flex-shrink: 0; }
   .vchip {
     width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-    font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 700;
+    font-family: ui-monospace, monospace; font-size: 10px; font-weight: 700;
   }
   .vchip.Pass { background: var(--pass-soft); color: var(--pass); }
   .vchip.Fail { background: var(--fail-soft); color: var(--fail); }
@@ -408,7 +422,7 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
   .version-block:last-child { margin-bottom: 0; }
   .version-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
   .version-head .vname { font-size: 12.5px; font-weight: 600; color: var(--ink-muted); }
-  .version-head .vmodel { font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: var(--ink-muted); }
+  .version-head .vmodel { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--ink-muted); }
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
   .block-label {
@@ -417,7 +431,7 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
   }
   pre.transcript, pre.response {
     background: var(--quote-bg); color: var(--quote-text); border: 1px solid var(--quote-border);
-    border-radius: 7px; padding: 12px 14px; font-family: 'IBM Plex Mono', monospace; font-size: 12px;
+    border-radius: 7px; padding: 12px 14px; font-family: ui-monospace, monospace; font-size: 12px;
     line-height: 1.55; white-space: pre-wrap; word-break: break-word; overflow-x: auto;
     margin: 0 0 12px; max-height: 220px; overflow-y: auto;
   }
@@ -430,12 +444,12 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
   <div class="meta-row" id="meta-row"></div>
 </header>
 <div class="progression" id="progression"></div>
-<section class="dataset">
+<section class="dataset" id="golden-section">
   <h2>Golden set</h2>
   <p class="lead">__GOLDEN_LEAD__</p>
   <div id="golden-cases"></div>
 </section>
-<section class="dataset">
+<section class="dataset" id="edge-section">
   <h2>Edge-case set</h2>
   <p class="lead">__EDGE_LEAD__</p>
   <div id="edge-cases"></div>
@@ -444,10 +458,12 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
 <footer class="page">Generated by scripts/build-eval-report.py from live Bedrock evaluation job results.</footer>
 <script id="eval-data" type="application/json">__DATA__</script>
 <script id="eval-metrics" type="application/json">__METRICS__</script>
+<script id="eval-leads" type="application/json">__LEADS__</script>
 <script>
 (function () {
   const cases = JSON.parse(document.getElementById('eval-data').textContent);
   const METRICS = JSON.parse(document.getElementById('eval-metrics').textContent);
+  const leads = JSON.parse(document.getElementById('eval-leads').textContent);
   document.getElementById('page-title').textContent = document.title;
 
   function esc(s) {
@@ -560,15 +576,46 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
       </details>`;
   }
 
+  document.getElementById('golden-section').hidden = golden.length === 0;
+  document.getElementById('edge-section').hidden = edge.length === 0;
   document.getElementById('golden-cases').innerHTML = golden.map(caseHtml).join('');
   document.getElementById('edge-cases').innerHTML = edge.map(caseHtml).join('');
   document.getElementById('extra-sets').innerHTML = extraCategories.map(category => {
     const list = other.filter(c => c.category === category);
-    return `<section class="dataset"><h2>${esc(category)}</h2><p class="lead">Rows from fixtures/${esc(category)}.</p><div>${list.map(caseHtml).join('')}</div></section>`;
+    const lead = leads[category] || ('Rows from fixtures/' + category + '.');
+    return `<section class="dataset"><h2>${esc(category)}</h2><p class="lead">${esc(lead)}</p><div>${list.map(caseHtml).join('')}</div></section>`;
   }).join('');
 })();
 </script>
 """
+
+
+def fill_template(template, replacements):
+    """Insert each value once. Later replacements do not scan earlier values."""
+    rest = template
+    parts = []
+    for key, value in replacements:
+        before, sep, rest = rest.partition(key)
+        if not sep:
+            raise SystemExit(f"report template is missing {key}")
+        parts.append(before)
+        parts.append(value)
+    parts.append(rest)
+    return "".join(parts)
+
+
+def load_datasets(prompt_root):
+    datasets_dir = prompt_root / "datasets"
+    files = sorted(datasets_dir.glob("*.jsonl")) if datasets_dir.is_dir() else []
+    if not files:
+        raise SystemExit(f"prompts/{prompt_root.name}: datasets/*.jsonl is missing. Run scripts/render-datasets.py.")
+    rows = []
+    for path in files:
+        try:
+            rows.extend(load_jsonl(path))
+        except OSError as err:
+            raise SystemExit(f"{path}: {err}") from err
+    return rows
 
 
 def main():
@@ -585,17 +632,13 @@ def main():
         print(f"no such prompt: prompts/{args.prompt}", file=sys.stderr)
         sys.exit(1)
 
-    golden_ds = load_jsonl(prompt_root / "datasets" / "golden.jsonl")
-    edge_ds = load_jsonl(prompt_root / "datasets" / "edge-case.jsonl")
+    datasets = load_datasets(prompt_root)
     fixture_meta = load_fixture_metadata(prompt_root)
     set_leads = load_set_leads(prompt_root)
 
-    job_results = [r for r in (fetch_job_results(arn) for arn in args.job_arns) if r]
-    if not job_results:
-        print("no completed jobs with results found", file=sys.stderr)
-        sys.exit(1)
+    job_results = [fetch_job_results(arn) for arn in args.job_arns]
 
-    cases = build_cases(job_results, golden_ds + edge_ds, fixture_meta)
+    cases = build_cases(job_results, datasets, fixture_meta)
     ordered = sorted(cases.values(), key=lambda c: (c["category"], c["id"]))
 
     label = args.prompt.replace("-", " ").title()
@@ -607,12 +650,17 @@ def main():
     else:
         title = f"{label} Eval Report"
 
-    page = (HTML_TEMPLATE
-            .replace("__DATA__", json_for_html(ordered))
-            .replace("__METRICS__", json_for_html(metric_names(ordered)))
-            .replace("__TITLE__", html.escape(title))
-            .replace("__GOLDEN_LEAD__", html.escape(set_leads["golden"]))
-            .replace("__EDGE_LEAD__", html.escape(set_leads["edge"])))
+    page = fill_template(
+        HTML_TEMPLATE,
+        [
+            ("__TITLE__", html.escape(title)),
+            ("__GOLDEN_LEAD__", html.escape(set_leads.get("golden", ""))),
+            ("__EDGE_LEAD__", html.escape(set_leads.get("edge", ""))),
+            ("__DATA__", json_for_html(ordered)),
+            ("__METRICS__", json_for_html(metric_names(ordered))),
+            ("__LEADS__", json_for_html(set_leads)),
+        ],
+    )
 
     out_path = repo_root / (args.out or f"reports/{args.prompt}-eval-report.html")
     out_path.parent.mkdir(parents=True, exist_ok=True)
