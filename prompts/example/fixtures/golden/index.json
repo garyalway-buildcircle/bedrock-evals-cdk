@@ -1,0 +1,7 @@
+{
+  "description": "Clear notes with an obvious label. Every row should Pass.",
+  "fixtures": [
+    { "file": "01-clear-praise.json", "id": "golden-01-clear-praise", "category": "normal" },
+    { "file": "02-clear-complaint.json", "id": "golden-02-clear-complaint", "category": "normal" }
+  ]
+}

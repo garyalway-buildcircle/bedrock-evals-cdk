@@ -1,0 +1,9 @@
+{
+  "id": "golden-01-clear-praise",
+  "description": "A short note that only praises the subject.",
+  "note": "The new kettle boils quickly and the handle stays cool.",
+  "expected": {
+    "label": "positive",
+    "reason": "The note praises how the kettle boils and how the handle feels."
+  }
+}

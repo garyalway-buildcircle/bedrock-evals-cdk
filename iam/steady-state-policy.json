@@ -1,0 +1,104 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AssumeCdkDeployRoles",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": [
+        "arn:aws:iam::<ACCOUNT_ID>:role/cdk-hnb659fds-deploy-role-<ACCOUNT_ID>-<REGION>",
+        "arn:aws:iam::<ACCOUNT_ID>:role/cdk-hnb659fds-file-publishing-role-<ACCOUNT_ID>-<REGION>",
+        "arn:aws:iam::<ACCOUNT_ID>:role/cdk-hnb659fds-image-publishing-role-<ACCOUNT_ID>-<REGION>",
+        "arn:aws:iam::<ACCOUNT_ID>:role/cdk-hnb659fds-lookup-role-<ACCOUNT_ID>-<REGION>"
+      ]
+    },
+    {
+      "Sid": "RunEvaluationJobs",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:CreateEvaluationJob",
+        "bedrock:GetEvaluationJob",
+        "bedrock:StopEvaluationJob"
+      ],
+      "Resource": "arn:aws:bedrock:<REGION>:<ACCOUNT_ID>:evaluation-job/*"
+    },
+    {
+      "Sid": "CreateEvaluationJobOnModels",
+      "Effect": "Allow",
+      "Action": "bedrock:CreateEvaluationJob",
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassEvalJobRoleToBedrock",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::<ACCOUNT_ID>:role/bedrock-prompt-evals-job-role-use1"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "bedrock.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "ReadPromptForReference",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:GetPrompt",
+        "bedrock:ListPrompts"
+      ],
+      "Resource": "arn:aws:bedrock:<REGION>:<ACCOUNT_ID>:prompt/*"
+    },
+    {
+      "Sid": "DiscoverModelCatalog",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:ListFoundationModels",
+        "bedrock:GetFoundationModel",
+        "bedrock:ListInferenceProfiles",
+        "bedrock:GetInferenceProfile"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageApplicationInferenceProfiles",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:CreateInferenceProfile",
+        "bedrock:DeleteInferenceProfile",
+        "bedrock:TagResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadEvaluationResults",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::bedrock-prompt-evals-output-<ACCOUNT_ID>-use1",
+        "arn:aws:s3:::bedrock-prompt-evals-output-<ACCOUNT_ID>-use1/*"
+      ]
+    },
+    {
+      "Sid": "ReadStackOutputs",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:GetTemplate",
+        "cloudformation:ListStackResources"
+      ],
+      "Resource": "arn:aws:cloudformation:<REGION>:<ACCOUNT_ID>:stack/BedrockPromptEvals/*"
+    },
+    {
+      "Sid": "ListEvaluationJobsAccountWide",
+      "Effect": "Allow",
+      "Action": "bedrock:ListEvaluationJobs",
+      "Resource": "*"
+    }
+  ]
+}
