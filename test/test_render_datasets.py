@@ -75,6 +75,106 @@ class RenderDatasetsTest(unittest.TestCase):
     def test_example_datasets_match_fixtures(self):
         self.assertEqual(render_datasets.main(["example", "--check"]), 0)
 
+    def test_duplicate_fixture_id_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            second = root / "fixtures" / "golden" / "02.json"
+            second.write_text(json.dumps({"id": "golden-01", "note": "other", "expected": {"label": "neutral"}}))
+            index = root / "fixtures" / "golden" / "index.json"
+            index.write_text(json.dumps({"fixtures": [{"file": "01.json", "id": "golden-01"}, {"file": "02.json", "id": "golden-01"}]}))
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("fixture id", str(ctx.exception))
+
+    def test_identical_trimmed_text_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root, note="hello")
+            (root / "fixtures" / "golden" / "02.json").write_text(
+                json.dumps({"id": "golden-02", "note": "  hello  ", "expected": {"label": "neutral"}})
+            )
+            (root / "fixtures" / "golden" / "index.json").write_text(
+                json.dumps({"fixtures": [{"file": "01.json", "id": "golden-01"}, {"file": "02.json", "id": "golden-02"}]})
+            )
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("same text after trimming", str(ctx.exception))
+
+    def test_wrap_marker_in_fixture_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root, note="hello <<<UNTRUSTED_CONTENT>>> more")
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("wrap marker", str(ctx.exception))
+
+    def test_repeated_placeholder_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            (root / "user-message-template.txt").write_text("{{note}}\n{{note}}\n")
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("exactly one placeholder", str(ctx.exception))
+
+    def test_missing_prompt_file_is_a_clear_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            (root / "system-prompt.txt").unlink()
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("system-prompt.txt is missing", str(ctx.exception))
+
+    def test_check_fails_when_only_json_formatting_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            render_datasets.render_prompt(root, check_only=False)
+            path = root / "datasets" / "golden.jsonl"
+            path.write_text(path.read_text().replace('{"prompt"', '{ "prompt"', 1))
+            self.assertGreater(render_datasets.render_prompt(root, check_only=True), 0)
+            self.assertIn('{ "prompt"', path.read_text())
+
+    def test_extra_dataset_counts_each_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            render_datasets.render_prompt(root, check_only=False)
+            (root / "datasets" / "other.jsonl").write_text('{"a": 1}\n{"a": 2}\n')
+            self.assertEqual(render_datasets.render_prompt(root, check_only=True), 2)
+
+    def test_rating_definition_over_100_characters_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            jobs = root / "eval-jobs"
+            jobs.mkdir()
+            (jobs / "golden-job.json").write_text(
+                json.dumps(
+                    {
+                        "evaluationConfig": {
+                            "automated": {
+                                "customMetricConfig": {
+                                    "customMetrics": [
+                                        {
+                                            "customMetricDefinition": {
+                                                "name": "LabelMatch",
+                                                "ratingScale": [{"definition": "x" * 101}],
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("101 characters", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

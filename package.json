@@ -12,8 +12,8 @@
     "test": "python3 -m unittest discover -s test -v && npx ts-node test/prompts.test.ts && python3 scripts/render-datasets.py --check"
   },
   "devDependencies": {
-    "aws-cdk": "^2.1140.0",
-    "aws-cdk-lib": "^2.170.0",
+    "aws-cdk": "^2.1145.0",
+    "aws-cdk-lib": "^2.273.0",
     "constructs": "^10.4.2",
     "typescript": "^5.6.3",
     "ts-node": "^10.9.2",

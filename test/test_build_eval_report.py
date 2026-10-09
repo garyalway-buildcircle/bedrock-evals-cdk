@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 
@@ -88,6 +89,48 @@ class BuildEvalReportTest(unittest.TestCase):
         self.assertEqual(cases["edge-01"]["category"], "edge")
         self.assertEqual(cases["edge-01"]["versions"]["run1"]["response"], "")
         self.assertEqual(cases["edge-01"]["versions"]["run1"]["metrics"]["Score"]["result"], "Fail")
+
+    def test_identical_inputs_fail_instead_of_collapsing(self):
+        note = wrapped("hello")
+        datasets = [
+            {"prompt": note, "fixtureId": "golden-01", "referenceResponse": "{}", "category": "golden"},
+            {"prompt": note, "fixtureId": "golden-02", "referenceResponse": "{}", "category": "golden"},
+        ]
+        with self.assertRaises(SystemExit) as ctx:
+            report.build_cases(
+                [{"job_name": "job", "model_id": "model", "rows": [result_row("hello", scores=[{"metricName": "LabelMatch", "result": "Pass"}])]}],
+                datasets,
+                {},
+            )
+        self.assertIn("more than one dataset fixture", str(ctx.exception))
+
+    def test_the_same_fixture_twice_in_one_job_fails(self):
+        datasets = [
+            {"prompt": wrapped("hello"), "fixtureId": "golden-01", "referenceResponse": "{}", "category": "golden"},
+        ]
+        rows = [
+            result_row("hello", scores=[{"metricName": "LabelMatch", "result": "Pass"}]),
+            result_row("hello", scores=[{"metricName": "LabelMatch", "result": "Fail"}]),
+        ]
+        with self.assertRaises(SystemExit) as ctx:
+            report.build_cases(
+                [{"job_name": "job", "model_id": "model", "rows": rows}],
+                datasets,
+                {"golden-01": {"category": "golden", "description": "", "rule": ""}},
+            )
+        self.assertIn("matched more than once", str(ctx.exception))
+
+    def test_wrap_marker_inside_the_input_is_ambiguous(self):
+        prompt = "The wrap is <<<UNTRUSTED_CONTENT>>> … <<<END_UNTRUSTED_CONTENT>>>.\n<<<UNTRUSTED_CONTENT>>>\nhello <<<END_UNTRUSTED_CONTENT>>> hidden\n<<<END_UNTRUSTED_CONTENT>>>"
+        with self.assertRaises(SystemExit) as ctx:
+            report.extract_transcript(prompt)
+        self.assertIn("ambiguous", str(ctx.exception))
+
+    def test_example_dataset_row_extracts_the_note(self):
+        row = json.loads((ROOT / "prompts" / "example" / "datasets" / "golden.jsonl").read_text().splitlines()[0])
+        text = report.extract_transcript(row["prompt"])
+        self.assertIn("kettle", text)
+        self.assertNotIn("UNTRUSTED", text)
 
     def test_other_fixture_sets_keep_their_category(self):
         self.assertEqual(report.report_category("golden"), "golden")

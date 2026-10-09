@@ -1,5 +1,5 @@
 {
-  "app": "npx ts-node --prefer-ts-exts bin/app.ts",
+  "app": "python3 scripts/render-datasets.py --check && npx ts-node --prefer-ts-exts bin/app.ts",
   "watch": {
     "include": ["bin/**", "lib/**", "prompts/**"],
     "exclude": ["node_modules", "cdk.out"]

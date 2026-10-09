@@ -10,9 +10,17 @@ import { discoverPrompts, inputVariableNames, logicalId, validateNameSuffix } fr
 
 /**
  * Infra only. One Bedrock Prompt per prompts/ directory, two shared scratch buckets
- * (destroy-on-delete, 1-day expiry), and the role evaluation jobs assume.
+ * (destroy-on-delete, 7-day expiry), and the role evaluation jobs assume.
  * Jobs are not a CloudFormation resource — see docs/runbook.md.
  */
+
+function readPromptFile(dir: string, promptId: string, fileName: string): string {
+  const filePath = path.join(dir, fileName)
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`prompts/${promptId}/${fileName} is missing`)
+  }
+  return fs.readFileSync(filePath, "utf-8")
+}
 
 export class EvalHarnessStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -34,9 +42,9 @@ export class EvalHarnessStack extends cdk.Stack {
     // Deterministic names so IAM policies can pin exact ARNs.
     const expireScratch: s3.LifecycleRule[] = [
       {
-        id: "expire-after-one-day",
-        expiration: cdk.Duration.days(1),
-        abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
+        id: "expire-after-seven-days",
+        expiration: cdk.Duration.days(7),
+        abortIncompleteMultipartUploadAfter: cdk.Duration.days(7),
       },
     ]
 
@@ -72,9 +80,9 @@ export class EvalHarnessStack extends cdk.Stack {
     outputBucket.grantWrite(evalJobRole)
     evalJobRole.addToPolicy(
       new iam.PolicyStatement({
-        sid: "InvokeClaudeModelsForEval",
+        sid: "InvokeModelsForEval",
         actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-        // Scoped model ARNs fail CreateEvaluationJob validation. See docs/setup.md.
+        // CreateEvaluationJob rejects a policy scoped to model ARNs. See docs/setup.md.
         resources: ["*"],
       }),
     )
@@ -93,8 +101,8 @@ export class EvalHarnessStack extends cdk.Stack {
         retainOnDelete: false,
       })
 
-      const systemPromptText = fs.readFileSync(path.join(definition.dir, "system-prompt.txt"), "utf-8")
-      const userMessageTemplate = fs.readFileSync(path.join(definition.dir, "user-message-template.txt"), "utf-8")
+      const systemPromptText = readPromptFile(definition.dir, definition.id, "system-prompt.txt")
+      const userMessageTemplate = readPromptFile(definition.dir, definition.id, "user-message-template.txt")
       const inputVariables = inputVariableNames(userMessageTemplate, definition.id).map((name) => ({ name }))
 
       const prompt = new bedrock.CfnPrompt(this, `Prompt${suffix}`, {

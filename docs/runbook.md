@@ -64,7 +64,7 @@ python3 scripts/build-eval-report.py <job-arn> [<job-arn> ...] [--prompt $P]
 Default output: `reports/<prompt>-eval-report.html` (gitignored, opens in the browser). Pass
 several ARNs to compare runs. Pass `--prompt` for anything other than `example`.
 
-Both S3 buckets expire objects after one day. Build the report when the jobs complete.
+Both S3 buckets expire objects after seven days. Build the report before then.
 Redeploy if the datasets have expired.
 
 ## What constitutes a pass
@@ -73,7 +73,8 @@ Redeploy if the datasets have expired.
 - Injection rows (`*-08`, `*-09`): a `Fail` is a security regression.
 - Metrics live in that prompt's `eval-jobs/*.json`. Do not reuse another prompt's.
 - Each `ratingScale[].definition` must stay under 100 characters or Bedrock rejects the job
-  with `ValidationException` (not in the CLI help). Put the detail in `instructions`.
+  with `ValidationException` (not in the CLI help). `render-datasets.py` checks the same limit.
+  Put the detail in `instructions`.
 
 ## Validating a prompt change
 
@@ -83,9 +84,10 @@ model sees.
 1. Edit `prompts/$P/system-prompt.txt`, `user-message-template.txt`, or a fixture. The fixture
    field named by the template's `{{variable}}` is the untrusted input. `expected` is the reference.
 2. `python3 scripts/render-datasets.py $P` rebuilds `datasets/*.jsonl` from `fixtures/`.
-   `--check` exits non-zero if a dataset does not match the fixtures and the current prompt text,
-   and it writes nothing. Any other flag, including a typo, is an error.
-3. `npx cdk deploy -c modelUnderTestId=... -c nameSuffix=-use1` — uploads `datasets/<prompt>/`
+   `--check` exits non-zero if a dataset file is not byte-for-byte what the fixtures and the
+   current prompt text would write, and it writes nothing. Any other flag, including a typo, is an error.
+3. `npx cdk deploy -c modelUnderTestId=... -c nameSuffix=-use1` — synth runs that `--check` first
+   and refuses a stale dataset. `cdk watch` does the same. Deploy uploads `datasets/<prompt>/`
    and updates every Prompt resource. `temperature` and `maxTokens` come from that prompt's
    `prompt.json`.
 4. Re-run both jobs, then build the report.

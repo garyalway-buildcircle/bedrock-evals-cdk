@@ -19,13 +19,16 @@ prompts/<prompt>/
 `<prompt>` is also the S3 prefix: `datasets/<prompt>/` and `results/<prompt>/`.
 
 1. `mkdir -p prompts/<prompt>/{docs,datasets,fixtures,eval-jobs}` and write `prompt.json`.
-   `description` is required. `temperature` defaults to `0` and `maxTokens` to `4000` when omitted;
-   set them in `prompt.json` when this prompt needs different inference settings.
-2. Write the two `.txt` files. The user template has exactly one `{{variable}}` (name it for
-   the input: `note`, `email`, …). The stack and render-datasets read that name from
+   `description` is required. `temperature` defaults to `0` and `maxTokens` to `4000` when omitted.
+   `maxTokens` must be from 1 to 200000. Set them in `prompt.json` when this prompt needs different
+   inference settings. `promptName` must be unique across `prompts/`.
+2. Write the two `.txt` files. The user template has exactly one occurrence of one `{{variable}}`
+   (name it for the input: `note`, `email`, …). The stack and render-datasets read that name from
    the template.
-3. Write fixtures. Each one has `id`, an `expected` object, and a string field whose name is the
-   template variable. `fixtures/<set>/index.json` lists every fixture file in that set, in row order.
+3. Write fixtures. Each one has a unique `id`, an `expected` object, and a string field whose name
+   is the template variable. That text must be unique after trimming, and it must not contain
+   `<<<UNTRUSTED_CONTENT>>>` or `<<<END_UNTRUSTED_CONTENT>>>`. `fixtures/<set>/index.json` lists
+   every fixture file in that set, in row order.
 4. `python3 scripts/render-datasets.py <prompt>` writes `datasets/<set>.jsonl` from those fixtures.
    `--check` later fails if the JSONL has drifted. Do not hand-edit the JSONL.
 5. Copy `prompts/example/eval-jobs/*.json` and rewrite the judge metrics for this

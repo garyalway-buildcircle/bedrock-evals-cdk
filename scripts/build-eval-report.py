@@ -30,19 +30,30 @@ def load_jsonl(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
-def extract_transcript(prompt):
-    """Pull the transcript out of the untrusted-content wrap.
+OPEN_WRAP = "\n<<<UNTRUSTED_CONTENT>>>\n"
+CLOSE_WRAP = "\n<<<END_UNTRUSTED_CONTENT>>>"
 
-    Uses rsplit (last occurrence), not split (first) - the system prompt's own rule text
-    mentions the wrap delimiters as an example before the real wrapped transcript appears later
-    in the string, and a first-occurrence split matches that mention instead.
+
+def extract_transcript(prompt):
+    """Pull the input out of the newline-delimited wrap.
+
+    The system prompt may name both markers inline. Only the newline-delimited form is the real
+    wrap, and it has to occur once. A fixture that contains either marker makes the split ambiguous.
     """
-    if "<<<END_UNTRUSTED_CONTENT>>>" not in prompt:
+    opens = prompt.count(OPEN_WRAP)
+    closes = prompt.count(CLOSE_WRAP)
+    if opens == 0 or closes == 0:
         return ""
-    before_end = prompt.rsplit("<<<END_UNTRUSTED_CONTENT>>>", 1)[0]
-    if "<<<UNTRUSTED_CONTENT>>>" not in before_end:
-        return ""
-    return before_end.rsplit("<<<UNTRUSTED_CONTENT>>>", 1)[1].strip()
+    if opens != 1 or closes != 1 or not prompt.endswith(CLOSE_WRAP):
+        raise SystemExit(
+            "untrusted-content wrap is ambiguous; a fixture must not contain the wrap markers"
+        )
+    payload = prompt[prompt.rfind(OPEN_WRAP) + len(OPEN_WRAP) : -len(CLOSE_WRAP)]
+    if "<<<UNTRUSTED_CONTENT>>>" in payload or "<<<END_UNTRUSTED_CONTENT>>>" in payload:
+        raise SystemExit(
+            "untrusted-content wrap is ambiguous; a fixture must not contain the wrap markers"
+        )
+    return payload.strip()
 
 
 def report_category(folder_name):
@@ -172,9 +183,16 @@ def match_fixture(prompt, datasets, row_index):
     one-fixture report.
     """
     marker = extract_transcript(prompt)
-    for row in datasets:
-        if extract_transcript(row["prompt"]) == marker:
-            return row["fixtureId"], row.get("referenceResponse", ""), row.get("category", "")
+    matches = [row for row in datasets if extract_transcript(row["prompt"]) == marker]
+    if len(matches) > 1:
+        ids = ", ".join(str(row.get("fixtureId")) for row in matches)
+        raise SystemExit(
+            f"result row {row_index} matches more than one dataset fixture ({ids}). "
+            "Their input text is the same after trimming."
+        )
+    if len(matches) == 1:
+        row = matches[0]
+        return row["fixtureId"], row.get("referenceResponse", ""), row.get("category", "")
     return f"unknown-fixture-{row_index}", "", ""
 
 
@@ -259,6 +277,11 @@ def build_cases(job_results, datasets, fixture_meta):
         for fid, category, ref, row in matched:
             version_key = f"run{job_run_number[category]}"
             transcript = extract_transcript(row["inputRecord"]["prompt"])
+            if fid in cases and version_key in cases[fid]["versions"]:
+                raise SystemExit(
+                    f"{result['job_name']}: fixture {fid} matched more than once in one run. "
+                    "Duplicate fixture ids or identical input text would drop a row."
+                )
             if fid not in cases:
                 meta = fixture_meta.get(fid, {})
                 cases[fid] = {

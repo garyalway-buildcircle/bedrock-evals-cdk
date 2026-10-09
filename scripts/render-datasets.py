@@ -22,15 +22,24 @@ REPO = Path(__file__).resolve().parent.parent
 PROMPTS = REPO / "prompts"
 # Keep in sync with lib/prompts.ts inputVariableNames.
 INPUT_VARIABLE = re.compile(r"\{\{([A-Za-z][A-Za-z0-9_]*)\}\}")
+WRAP_MARKERS = ("<<<UNTRUSTED_CONTENT>>>", "<<<END_UNTRUSTED_CONTENT>>>")
+RATING_DEFINITION_LIMIT = 100
+
+
+def read_prompt_text(prompt_dir: Path, file_name: str) -> str:
+    path = prompt_dir / file_name
+    if not path.is_file():
+        raise SystemExit(f"{prompt_dir.name}: {file_name} is missing")
+    return path.read_text()
 
 
 def input_variable_name(template: str, prompt_id: str) -> str:
-    names = list(dict.fromkeys(INPUT_VARIABLE.findall(template)))
+    names = INPUT_VARIABLE.findall(template)
     if not names:
         raise SystemExit(f"{prompt_id}: user-message-template.txt has no {{variable}} placeholder")
     if len(names) > 1:
         raise SystemExit(
-            f"{prompt_id}: user-message-template.txt has multiple placeholders ({', '.join(names)}); one untrusted input only"
+            f"{prompt_id}: user-message-template.txt must contain exactly one placeholder, found {len(names)} ({', '.join(names)})"
         )
     return names[0]
 
@@ -110,6 +119,12 @@ def load_set(set_dir: Path, variable: str, prompt_id: str) -> list[dict]:
                 f"{rel}/{file_name}: {variable} must be a string "
                 f"(the {{{{{variable}}}}} placeholder in user-message-template.txt is the untrusted input)"
             )
+        for marker in WRAP_MARKERS:
+            if marker in payload:
+                raise SystemExit(
+                    f"{rel}/{file_name}: {variable} contains {marker}. "
+                    "The report cannot find the end of the input if a fixture includes a wrap marker."
+                )
         expected = fixture.get("expected")
         if not isinstance(expected, dict):
             raise SystemExit(f"{rel}/{file_name}: expected must be a JSON object")
@@ -142,6 +157,7 @@ def serialise(rows: list[dict]) -> str:
 
 
 def changed_rows(previous: str | None, rows: list[dict], text: str) -> int:
+    """Any byte difference is stale, including a hand-edit that keeps the same JSON values."""
     if previous == text:
         return 0
     if not previous:
@@ -149,18 +165,90 @@ def changed_rows(previous: str | None, rows: list[dict], text: str) -> int:
     try:
         old_rows = [json.loads(line) for line in previous.splitlines() if line.strip()]
     except json.JSONDecodeError:
-        return len(rows)
+        return max(len(rows), 1)
     if len(old_rows) != len(rows):
         return max(len(old_rows), len(rows))
-    return sum(1 for old, new in zip(old_rows, rows) if old != new)
+    semantic = sum(1 for old, new in zip(old_rows, rows) if old != new)
+    return semantic or len(rows)
+
+
+def assert_unique_fixtures(prompt_id: str, loaded: list[tuple[str, list[dict]]]) -> None:
+    """The report keys a case by fixture id and matches rows on trimmed input text. Either collision drops a row."""
+    seen_ids: dict[str, str] = {}
+    seen_text: dict[str, str] = {}
+    for set_name, fixtures in loaded:
+        for fixture in fixtures:
+            fixture_id = fixture["id"]
+            previous_id = seen_ids.get(fixture_id)
+            if previous_id is not None:
+                raise SystemExit(
+                    f"{prompt_id}: fixture id {fixture_id!r} is used in both {previous_id} and {set_name}"
+                )
+            seen_ids[fixture_id] = set_name
+            text = fixture["payload"].strip()
+            previous_text = seen_text.get(text)
+            if previous_text is not None:
+                raise SystemExit(
+                    f"{prompt_id}: {fixture_id} and {previous_text} have the same text after trimming. "
+                    "The report would score them as one case."
+                )
+            seen_text[text] = fixture_id
+
+
+def jsonl_row_count(path: Path) -> int:
+    try:
+        text = path.read_text()
+    except OSError as err:
+        raise SystemExit(f"{path}: {err}") from err
+    return max(sum(1 for line in text.splitlines() if line.strip()), 1)
+
+
+def check_eval_jobs(prompt_dir: Path) -> None:
+    jobs = prompt_dir / "eval-jobs"
+    if not jobs.is_dir():
+        return
+    for path in sorted(jobs.glob("*.json")):
+        if ".local." in path.name:
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError as err:
+            raise SystemExit(f"{prompt_dir.name}/eval-jobs/{path.name} is not valid JSON: {err}") from err
+        metrics = (
+            data.get("evaluationConfig", {})
+            .get("automated", {})
+            .get("customMetricConfig", {})
+            .get("customMetrics", [])
+        )
+        if not isinstance(metrics, list):
+            continue
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            definition = metric.get("customMetricDefinition") or {}
+            if not isinstance(definition, dict):
+                continue
+            name = definition.get("name") or path.name
+            for scale in definition.get("ratingScale") or []:
+                if not isinstance(scale, dict):
+                    continue
+                text = scale.get("definition", "")
+                if isinstance(text, str) and len(text) > RATING_DEFINITION_LIMIT:
+                    raise SystemExit(
+                        f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale definition is "
+                        f"{len(text)} characters (max {RATING_DEFINITION_LIMIT})"
+                    )
 
 
 def render_prompt(prompt_dir: Path, check_only: bool) -> int:
     """Rebuild one prompt's datasets from its fixtures. Returns the number of stale rows."""
-    system_prompt = (prompt_dir / "system-prompt.txt").read_text()
-    template = (prompt_dir / "user-message-template.txt").read_text()
+    system_prompt = read_prompt_text(prompt_dir, "system-prompt.txt")
+    template = read_prompt_text(prompt_dir, "user-message-template.txt")
     variable = input_variable_name(template, prompt_dir.name)
     sets = fixture_sets(prompt_dir)
+    loaded = [(set_dir.name, load_set(set_dir, variable, prompt_dir.name)) for set_dir in sets]
+    assert_unique_fixtures(prompt_dir.name, loaded)
+    check_eval_jobs(prompt_dir)
 
     datasets_dir = prompt_dir / "datasets"
     expected_files = {f"{set_dir.name}.jsonl" for set_dir in sets}
@@ -173,8 +261,7 @@ def render_prompt(prompt_dir: Path, check_only: bool) -> int:
     if not check_only:
         datasets_dir.mkdir(parents=True, exist_ok=True)
 
-    for set_dir in sets:
-        fixtures = load_set(set_dir, variable, prompt_dir.name)
+    for set_dir, (_, fixtures) in zip(sets, loaded):
         rows = render_rows(system_prompt, template, variable, set_dir.name, fixtures)
         text = serialise(rows)
         path = datasets_dir / f"{set_dir.name}.jsonl"
@@ -189,14 +276,14 @@ def render_prompt(prompt_dir: Path, check_only: bool) -> int:
         print(f"  {set_dir.name:12} {len(rows)} rows written — {changed} changed")
 
     if extras:
-        names = ", ".join(p.name for p in extras)
-        if check_only:
-            stale += len(extras)
-            print(f"  extra dataset file(s) with no fixture set: {names}")
-        else:
-            for path in extras:
+        for path in extras:
+            count = jsonl_row_count(path)
+            if check_only:
+                stale += count
+                print(f"  {path.name:12} {count} row(s) with no fixture set")
+            else:
                 path.unlink()
-            print(f"  removed extra dataset file(s): {names}")
+                print(f"  removed {path.name} ({count} row(s) with no fixture set)")
 
     return stale
 

@@ -15,22 +15,23 @@ export interface PromptDefinition {
 
 const DEFAULT_TEMPERATURE = 0
 const DEFAULT_MAX_TOKENS = 4000
+/** Above this, a typo is more likely than a real model limit. */
+const MAX_MAX_TOKENS = 200_000
 
 /** One {{name}} in the user template is that prompt's untrusted input. Keep in sync with render-datasets.py. */
 const INPUT_VARIABLE = /\{\{([A-Za-z][A-Za-z0-9_]*)\}\}/g
 
 export function inputVariableNames(template: string, promptId: string): string[] {
   const names = [...template.matchAll(INPUT_VARIABLE)].flatMap((match) => (match[1] ? [match[1]] : []))
-  const unique = [...new Set(names)]
-  if (unique.length === 0) {
+  if (names.length === 0) {
     throw new Error(`prompts/${promptId}/user-message-template.txt has no {{variable}} placeholder`)
   }
-  if (unique.length > 1) {
+  if (names.length > 1) {
     throw new Error(
-      `prompts/${promptId}/user-message-template.txt has multiple placeholders (${unique.join(", ")}); one untrusted input only`,
+      `prompts/${promptId}/user-message-template.txt must contain exactly one placeholder, found ${names.length} (${names.join(", ")})`,
     )
   }
-  return unique
+  return names
 }
 
 /**
@@ -128,8 +129,10 @@ function temperatureOf(promptId: string, manifest: Record<string, unknown>): num
 function maxTokensOf(promptId: string, manifest: Record<string, unknown>): number {
   if (manifest.maxTokens === undefined) return DEFAULT_MAX_TOKENS
   const maxTokens = manifest.maxTokens
-  if (typeof maxTokens !== "number" || !Number.isInteger(maxTokens) || maxTokens < 1) {
-    throw new Error(`prompts/${promptId}/prompt.json maxTokens must be a positive integer`)
+  if (typeof maxTokens !== "number" || !Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > MAX_MAX_TOKENS) {
+    throw new Error(
+      `prompts/${promptId}/prompt.json maxTokens must be an integer from 1 to ${MAX_MAX_TOKENS}`,
+    )
   }
   return maxTokens
 }
@@ -159,5 +162,16 @@ export function discoverPrompts(promptsRoot: string): PromptDefinition[] {
     .sort((a, b) => a.id.localeCompare(b.id))
 
   assertUniqueLogicalIds(definitions.map((definition) => definition.id))
+  const seenNames = new Map<string, string>()
+  for (const definition of definitions) {
+    const promptName = definition.promptName ?? definition.id
+    const previous = seenNames.get(promptName)
+    if (previous !== undefined) {
+      throw new Error(
+        `prompts/${previous} and prompts/${definition.id} both use Bedrock prompt name ${JSON.stringify(promptName)}.`,
+      )
+    }
+    seenNames.set(promptName, definition.id)
+  }
   return definitions
 }

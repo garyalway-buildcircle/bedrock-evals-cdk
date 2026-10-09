@@ -5,6 +5,7 @@ import * as path from "node:path"
 import {
   assertUniqueLogicalIds,
   discoverPrompts,
+  inputVariableNames,
   logicalId,
   validateNameSuffix,
 } from "../lib/prompts"
@@ -37,6 +38,10 @@ assert.throws(() => validateNameSuffix("use1"), /must be empty or start with/)
 assert.throws(() => validateNameSuffix("-Use1"), /must be empty or start with/)
 assert.throws(() => validateNameSuffix("-"), /must be empty or start with/)
 assert.throws(() => validateNameSuffix("-" + "a".repeat(22)), /too long/)
+
+assert.deepEqual(inputVariableNames("{{note}}", "example"), ["note"])
+assert.throws(() => inputVariableNames("{{note}}\n{{note}}", "example"), /exactly one placeholder/)
+assert.throws(() => inputVariableNames("{{note}} {{email}}", "example"), /exactly one placeholder/)
 
 {
   const root = tempPrompts()
@@ -77,6 +82,19 @@ assert.throws(() => validateNameSuffix("-" + "a".repeat(22)), /too long/)
   withPrompt(root, "foo-bar", { description: "a" })
   withPrompt(root, "fooBar", { description: "b" })
   assert.throws(() => discoverPrompts(root), /Rename one of them/)
+}
+
+{
+  const root = tempPrompts()
+  withPrompt(root, "huge", { description: "x", maxTokens: 200001 })
+  assert.throws(() => discoverPrompts(root), /maxTokens must be an integer from 1 to 200000/)
+}
+
+{
+  const root = tempPrompts()
+  withPrompt(root, "one", { description: "a", promptName: "shared" })
+  withPrompt(root, "two", { description: "b", promptName: "shared" })
+  assert.throws(() => discoverPrompts(root), /both use Bedrock prompt name/)
 }
 
 {
