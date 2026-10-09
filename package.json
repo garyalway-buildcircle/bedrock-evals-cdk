@@ -1,0 +1,22 @@
+{
+  "name": "bedrock-evals-cdk",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "CDK harness for evaluating prompts on Amazon Bedrock (Prompt Management + Evaluation Jobs). One prompt per directory under prompts/.",
+  "scripts": {
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy",
+    "diff": "cdk diff",
+    "test": "python3 -m unittest discover -s test -v && npx ts-node test/prompts.test.ts && npx ts-node test/stack.test.ts && python3 scripts/render-datasets.py --check"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.1145.0",
+    "aws-cdk-lib": "^2.273.0",
+    "constructs": "^10.4.2",
+    "typescript": "^5.6.3",
+    "ts-node": "^10.9.2",
+    "@types/node": "^22.9.0"
+  }
+}

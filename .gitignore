@@ -1,0 +1,18 @@
+node_modules/
+cdk.out/
+cdk.context.json
+*.log
+.DS_Store
+
+# Filled-in copies with real account-specific values (bucket names, role ARNs, account IDs).
+# Templates with <PLACEHOLDER> tokens stay tracked; only the *.local.json copies are gitignored.
+# The unanchored pattern catches copies left at a path the templates no longer live at: git leaves
+# ignored files where they are, so a narrower rule would un-ignore real ARNs rather than move them.
+*.local.json
+
+# Eval reports (scripts/build-eval-report.py output). Generated from job results on demand and
+# opened locally — nothing here is tracked.
+reports/
+
+# Source material used to write fixtures. Never committed.
+raw-data/

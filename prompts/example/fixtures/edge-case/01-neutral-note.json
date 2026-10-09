@@ -1,0 +1,10 @@
+{
+  "id": "edge-01-neutral-note",
+  "description": "A note that states a fact and neither praises nor complains.",
+  "ruleValidated": "Neutral when the note does neither.",
+  "note": "The box arrived on Tuesday and contained a blue mug.",
+  "expected": {
+    "label": "neutral",
+    "reason": "The note only states when the box arrived and what was inside."
+  }
+}

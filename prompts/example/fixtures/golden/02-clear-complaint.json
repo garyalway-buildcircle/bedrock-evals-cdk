@@ -1,0 +1,9 @@
+{
+  "id": "golden-02-clear-complaint",
+  "description": "A short note that only complains about the subject.",
+  "note": "The lamp flickers and the switch sticks every time.",
+  "expected": {
+    "label": "negative",
+    "reason": "The note complains that the lamp flickers and the switch sticks."
+  }
+}
