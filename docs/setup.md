@@ -188,7 +188,9 @@ AWS_PROFILE=<your-profile> AWS_REGION=us-east-1 npx cdk deploy \
 `<NAME_SUFFIX>` in the steady-state policy has to be this same `-use1`. Omitting
 `-c modelUnderTestId=...` fails at synth. The stack does not deploy a placeholder model id.
 `npm run deploy` and `npm run destroy` are plain `cdk deploy` and `cdk destroy`. They still need
-the context flags above, and destroy asks for confirmation.
+the context flags above, and destroy asks for confirmation. Recommended CDK feature flags live in
+`cdk.flags.json` and are loaded by `bin/app.ts`, so `cdk synth` does not warn that they are
+unconfigured. `-c` values still override them.
 
 Note the `Outputs`: `DatasetBucketName`, `OutputBucketName`, `EvalJobRoleArn`, and one
 `PromptArn<Name>` per directory under `prompts/`.

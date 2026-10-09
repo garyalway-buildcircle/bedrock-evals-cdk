@@ -6,7 +6,15 @@ import * as iam from "aws-cdk-lib/aws-iam"
 import * as s3 from "aws-cdk-lib/aws-s3"
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment"
 import type { Construct } from "constructs"
-import { deployedPromptText, discoverPrompts, inputVariableNames, logicalId, validateNameSuffix } from "./prompts"
+import {
+  assertLocalJobsMatchModel,
+  assertNoSystemPlaceholders,
+  deployedPromptText,
+  discoverPrompts,
+  inputVariableNames,
+  logicalId,
+  validateNameSuffix,
+} from "./prompts"
 
 /**
  * Infra only. One Bedrock Prompt per prompts/ directory, two shared scratch buckets
@@ -88,6 +96,8 @@ export class EvalHarnessStack extends cdk.Stack {
           "bedrock:InvokeModelWithResponseStream",
           "bedrock:GetInferenceProfile",
           "bedrock:ListInferenceProfiles",
+          "bedrock:CreateModelInvocationJob",
+          "bedrock:StopModelInvocationJob",
         ],
         // CreateEvaluationJob rejects a policy scoped to model ARNs. See docs/setup.md.
         resources: ["*"],
@@ -109,6 +119,8 @@ export class EvalHarnessStack extends cdk.Stack {
       })
 
       const systemPromptText = readPromptFile(definition.dir, definition.id, "system-prompt.txt")
+      assertNoSystemPlaceholders(systemPromptText, definition.id)
+      assertLocalJobsMatchModel(definition.dir, definition.id, modelUnderTestId)
       const userMessageTemplate = readPromptFile(definition.dir, definition.id, "user-message-template.txt")
       const inputVariables = inputVariableNames(userMessageTemplate, definition.id).map((name) => ({ name }))
       // Evaluation datasets have one prompt string. This user message is that string, with the

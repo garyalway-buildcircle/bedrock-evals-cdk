@@ -17,11 +17,25 @@ import webbrowser
 from pathlib import Path
 
 
-def aws_json(*args):
-    result = subprocess.run(["aws", *args, "--output", "json"], capture_output=True, text=True)
+def region_of_job_arn(job_arn):
+    """The region is the fourth ARN field: arn:aws:bedrock:<region>:...:evaluation-job/..."""
+    parts = job_arn.split(":")
+    if len(parts) < 6 or parts[0] != "arn" or parts[2] != "bedrock" or not parts[3]:
+        raise SystemExit(
+            f"{job_arn} is not a Bedrock evaluation job ARN "
+            "(expected arn:aws:bedrock:<region>:...:evaluation-job/...)"
+        )
+    return parts[3]
+
+
+def aws_json(region, *args):
+    result = subprocess.run(
+        ["aws", "--region", region, *args, "--output", "json"],
+        capture_output=True,
+        text=True,
+    )
     if result.returncode != 0:
-        print(f"aws {' '.join(args)} failed:\n{result.stderr}", file=sys.stderr)
-        sys.exit(1)
+        raise SystemExit(f"aws --region {region} {' '.join(args)} failed:\n{result.stderr}")
     return json.loads(result.stdout)
 
 
@@ -75,10 +89,12 @@ def load_fixture_metadata(prompt_root):
             if fp.name == "index.json":
                 continue
             fx = json.loads(fp.read_text())
+            notes = fx.get("notes", "")
             meta[fx["id"]] = {
                 "category": category,
                 "description": fx.get("description", ""),
                 "rule": fx.get("ruleValidated", ""),
+                "notes": notes if isinstance(notes, str) else "",
             }
     return meta
 
@@ -117,7 +133,7 @@ def output_keys_from_pages(pages):
     return keys
 
 
-def list_output_keys(bucket, prefix):
+def list_output_keys(region, bucket, prefix):
     """Page list-objects-v2 explicitly. The CLI's own pager is turned off so a truncated page is not dropped."""
     pages = []
     token = None
@@ -125,7 +141,7 @@ def list_output_keys(bucket, prefix):
         cmd = ["--no-paginate", "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix]
         if token:
             cmd.extend(["--continuation-token", token])
-        listing = aws_json(*cmd)
+        listing = aws_json(region, *cmd)
         pages.append(listing)
         if not listing.get("IsTruncated"):
             break
@@ -141,7 +157,8 @@ def json_for_html(value):
 
 
 def fetch_job_results(job_arn):
-    job = aws_json("bedrock", "get-evaluation-job", "--job-identifier", job_arn)
+    region = region_of_job_arn(job_arn)
+    job = aws_json(region, "bedrock", "get-evaluation-job", "--job-identifier", job_arn)
     status = job.get("status")
     if status != "Completed":
         raise SystemExit(f"job {job_arn} has status {status!r}, not Completed. The report was not written.")
@@ -153,7 +170,7 @@ def fetch_job_results(job_arn):
     job_id = job_arn.rsplit("/", 1)[-1]
     search_prefix = f"{prefix.rstrip('/')}/{job_name}/{job_id}/models/"
 
-    keys = list_output_keys(bucket, search_prefix)
+    keys = list_output_keys(region, bucket, search_prefix)
     if not keys:
         raise SystemExit(
             f"no *_output.jsonl found for job {job_arn} under s3://{bucket}/{search_prefix}. The report was not written."
@@ -163,12 +180,14 @@ def fetch_job_results(job_arn):
     with tempfile.TemporaryDirectory(prefix=f"eval-report-{job_id}-") as tmp:
         for index, key in enumerate(keys):
             dest = Path(tmp) / f"{index}.jsonl"
-            subprocess.run(
-                ["aws", "s3", "cp", f"s3://{bucket}/{key}", str(dest)],
-                check=True,
+            copy = subprocess.run(
+                ["aws", "--region", region, "s3", "cp", f"s3://{bucket}/{key}", str(dest)],
+                check=False,
                 capture_output=True,
                 text=True,
             )
+            if copy.returncode != 0:
+                raise SystemExit(f"aws s3 cp s3://{bucket}/{key} failed:\n{copy.stderr}")
             rows.extend(load_jsonl(dest))
 
     return {"job_name": job_name, "model_id": model_id, "rows": rows}
@@ -304,6 +323,7 @@ def build_cases(job_results, datasets, fixture_meta):
                     "category": category,
                     "description": meta.get("description", ""),
                     "rule": meta.get("rule", ""),
+                    "notes": meta.get("notes", ""),
                     "transcript": transcript,
                     "reference": ref,
                     "versions": {},
@@ -565,6 +585,7 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
         </summary>
         <div class="case-body">
           <div class="rule"><b>${c.rule ? 'Rule:' : 'Case:'}</b> ${esc(c.rule || c.description)}</div>
+          ${c.notes ? `<div class="rule"><b>Notes:</b> ${esc(c.notes)}</div>` : ''}
           <div class="version-block">
             <div class="block-label">Input</div>
             <pre class="transcript">${esc(c.transcript)}</pre>

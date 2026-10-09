@@ -17,6 +17,8 @@ const DEFAULT_TEMPERATURE = 0
 const DEFAULT_MAX_TOKENS = 4000
 /** Above this, a typo is more likely than a real model limit. */
 const MAX_MAX_TOKENS = 200_000
+/** CreatePrompt description length. */
+const DESCRIPTION_LIMIT = 200
 /** Bedrock prompt name: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_CreatePrompt.html */
 const BEDROCK_PROMPT_NAME = /^([0-9a-zA-Z][_-]?){1,100}$/
 
@@ -34,6 +36,47 @@ export function inputVariableNames(template: string, promptId: string): string[]
     )
   }
   return names
+}
+
+/** system-prompt.txt is concatenated into the user message, so a placeholder there is a real input. */
+export function assertNoSystemPlaceholders(systemPrompt: string, promptId: string): void {
+  const names = [...systemPrompt.matchAll(INPUT_VARIABLE)].flatMap((match) => (match[1] ? [match[1]] : []))
+  if (names.length > 0) {
+    throw new Error(
+      `prompts/${promptId}/system-prompt.txt contains a placeholder (${names.join(", ")}). The deployed user message includes this file, so the only placeholder belongs in the user template.`,
+    )
+  }
+}
+
+function modelIdentifierOf(data: unknown): string | undefined {
+  if (typeof data !== "object" || data === null) return undefined
+  const models = (data as { inferenceConfig?: { models?: unknown } }).inferenceConfig?.models
+  const first = Array.isArray(models) ? models[0] : undefined
+  const modelId = (first as { bedrockModel?: { modelIdentifier?: unknown } } | undefined)?.bedrockModel?.modelIdentifier
+  return typeof modelId === "string" ? modelId : undefined
+}
+
+/** A gitignored *.local.json must name the same model the stack was deployed with. */
+export function assertLocalJobsMatchModel(promptDir: string, promptId: string, modelUnderTestId: string): void {
+  const jobsDir = path.join(promptDir, "eval-jobs")
+  if (!fs.existsSync(jobsDir)) return
+  for (const name of fs.readdirSync(jobsDir).sort()) {
+    if (!name.endsWith(".json") || !name.includes(".local.")) continue
+    const filePath = path.join(jobsDir, name)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"))
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      throw new Error(`prompts/${promptId}/eval-jobs/${name} is not valid JSON: ${detail}`)
+    }
+    const modelId = modelIdentifierOf(parsed)
+    if (modelId !== modelUnderTestId) {
+      throw new Error(
+        `prompts/${promptId}/eval-jobs/${name} modelIdentifier must be ${JSON.stringify(modelUnderTestId)}, the -c modelUnderTestId value`,
+      )
+    }
+  }
 }
 
 /** The text an evaluation row sends, with the {{variable}} still in place. Keep in sync with render-datasets.py assemble_prompt. */
@@ -120,6 +163,11 @@ function requiredDescription(promptId: string, manifest: Record<string, unknown>
   const description = manifest.description
   if (typeof description !== "string" || description.trim() === "") {
     throw new Error(`prompts/${promptId}/prompt.json description must be a non-empty string`)
+  }
+  if (description.length > DESCRIPTION_LIMIT) {
+    throw new Error(
+      `prompts/${promptId}/prompt.json description is ${description.length} characters (max ${DESCRIPTION_LIMIT})`,
+    )
   }
   return description
 }

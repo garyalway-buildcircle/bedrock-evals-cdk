@@ -27,9 +27,16 @@ WRAP_MARKERS = ("<<<UNTRUSTED_CONTENT>>>", "<<<END_UNTRUSTED_CONTENT>>>")
 OPEN_WRAP = "\n<<<UNTRUSTED_CONTENT>>>\n"
 CLOSE_WRAP = "\n<<<END_UNTRUSTED_CONTENT>>>"
 RATING_DEFINITION_LIMIT = 100
+DESCRIPTION_LIMIT = 200
 DEFAULT_TEMPERATURE = 0
 DEFAULT_MAX_TOKENS = 4000
 MAX_MAX_TOKENS = 200_000
+MODEL_PLACEHOLDER = "<MODEL_UNDER_TEST_ID>"
+JOB_NAME_PLACEHOLDER = "<JOB_NAME>"
+# CreateEvaluationJob JobName: 1-63 chars, and this pattern. Length is checked separately
+# because a group in the pattern can be more than one character.
+JOB_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}$")
+JUDGE_PLACEHOLDERS = ("{{prompt}}", "{{prediction}}", "{{ground_truth}}")
 
 
 def read_prompt_text(prompt_dir: Path, file_name: str) -> str:
@@ -141,6 +148,16 @@ def load_set(set_dir: Path, variable: str, prompt_id: str) -> list[dict]:
 def assemble_prompt(system_prompt: str, template: str, placeholder: str, payload: str) -> str:
     body = template.replace(placeholder, payload).rstrip("\n")
     return system_prompt + "\n" + body
+
+
+def assert_no_system_placeholders(prompt_id: str, system_prompt: str) -> None:
+    """The deployed user message is this file plus the template, so a {{name}} here is a real input."""
+    names = INPUT_VARIABLE.findall(system_prompt)
+    if names:
+        raise SystemExit(
+            f"{prompt_id}: system-prompt.txt contains a placeholder ({', '.join(names)}). "
+            "The deployed user message includes this file, so the only placeholder belongs in the user template."
+        )
 
 
 def assert_single_wrap(prompt_id: str, system_prompt: str, template: str, variable: str) -> None:
@@ -266,11 +283,45 @@ def inference_settings(prompt_dir: Path) -> tuple[int | float, int]:
 
 
 def inference_params(temperature: int | float, max_tokens: int) -> str:
-    """Converse-shaped parameters. Bedrock passes this string through on the evaluation invoke."""
+    """What a model-evaluation job reads from inferenceParams.
+
+    The model-evaluation user guide's Claude example uses inferenceConfig.maxTokens and
+    inferenceConfig.temperature (and omits topP; Anthropic rejects temperature and top_p together).
+    This is not the raw Anthropic InvokeModel body.
+    """
     return json.dumps(
         {"inferenceConfig": {"maxTokens": max_tokens, "temperature": temperature}},
         separators=(",", ":"),
     )
+
+
+def write_inference_params(path: Path, model_identifier: str, current: object, expected: str) -> None:
+    """Replace or insert only the inferenceParams string. Leave the rest of the file as it is."""
+    text = path.read_text()
+    replacement = '"inferenceParams": ' + json.dumps(expected)
+    if isinstance(current, str):
+        pattern = re.compile(r'"inferenceParams"\s*:\s*' + re.escape(json.dumps(current)))
+        match = pattern.search(text)
+        if not match:
+            raise SystemExit(
+                f"{path.name}: inferenceParams is present but not a plain JSON string, so it was not rewritten"
+            )
+        updated = text[: match.start()] + replacement + text[match.end() :]
+    else:
+        encoded_id = json.dumps(model_identifier)
+        ident = re.compile(r'("modelIdentifier"\s*:\s*' + re.escape(encoded_id) + r")")
+        bedrock_at = text.find('"bedrockModel"')
+        match = None
+        for candidate in ident.finditer(text):
+            if bedrock_at == -1 or candidate.start() > bedrock_at:
+                match = candidate
+                break
+        if match is None:
+            raise SystemExit(f"{path.name}: cannot insert inferenceParams next to modelIdentifier")
+        updated = text[: match.end()] + ", " + replacement + text[match.end() :]
+    if not updated.endswith("\n"):
+        updated += "\n"
+    path.write_text(updated)
 
 
 def sync_inference_params(prompt_dir: Path, check_only: bool) -> None:
@@ -294,9 +345,106 @@ def sync_inference_params(prompt_dir: Path, check_only: bool) -> None:
                 f"{rel}: inferenceParams must be {expected} (prompt.json temperature and maxTokens). "
                 "Run without --check, then refresh the .local.json copy you submit."
             )
-        bedrock_model["inferenceParams"] = expected
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=True) + "\n")
+        if current is not None and not isinstance(current, str):
+            raise SystemExit(f"{rel}: inferenceParams must be a string")
+        model_identifier = bedrock_model.get("modelIdentifier")
+        if not isinstance(model_identifier, str):
+            raise SystemExit(f"{rel}: modelIdentifier must be a string")
+        write_inference_params(path, model_identifier, current if isinstance(current, str) else None, expected)
         print(f"  updated {path.name} inferenceParams")
+
+
+def check_prompt_description(prompt_dir: Path) -> None:
+    path = prompt_dir / "prompt.json"
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as err:
+        raise SystemExit(f"{prompt_dir.name}/prompt.json is not valid JSON: {err}") from err
+    if not isinstance(data, dict):
+        raise SystemExit(f"{prompt_dir.name}/prompt.json must be a JSON object")
+    description = data.get("description")
+    if isinstance(description, str) and len(description) > DESCRIPTION_LIMIT:
+        raise SystemExit(
+            f"{prompt_dir.name}/prompt.json description is {len(description)} characters (max {DESCRIPTION_LIMIT})"
+        )
+
+
+def s3_uri(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def check_job_contract(prompt_dir: Path, path: Path, data: dict) -> None:
+    """Tracked templates stay unsubmittable. A .local.json must be ready to submit."""
+    rel = f"{prompt_dir.name}/eval-jobs/{path.name}"
+    local = ".local." in path.name
+    prompt_id = prompt_dir.name
+
+    job_name = data.get("jobName")
+    if local:
+        if (
+            not isinstance(job_name, str)
+            or not job_name
+            or len(job_name) > 63
+            or "<" in job_name
+            or JOB_NAME_PATTERN.fullmatch(job_name) is None
+        ):
+            raise SystemExit(
+                f"{rel}: jobName must be 1-63 characters matching {JOB_NAME_PATTERN.pattern}, with no placeholders"
+            )
+    elif job_name != JOB_NAME_PLACEHOLDER:
+        raise SystemExit(
+            f"{rel}: jobName must be {JOB_NAME_PLACEHOLDER}. "
+            "Copy the file to *.local.json and set a unique name there."
+        )
+
+    models = data.get("inferenceConfig", {}).get("models") if isinstance(data.get("inferenceConfig"), dict) else None
+    bedrock_model = models[0].get("bedrockModel") if isinstance(models, list) and models and isinstance(models[0], dict) else None
+    model_id = bedrock_model.get("modelIdentifier") if isinstance(bedrock_model, dict) else None
+    if local:
+        if not isinstance(model_id, str) or not model_id or "<" in model_id:
+            raise SystemExit(f"{rel}: modelIdentifier must be the real model id, not a placeholder")
+    elif model_id != MODEL_PLACEHOLDER:
+        raise SystemExit(f"{rel}: modelIdentifier must stay {MODEL_PLACEHOLDER}")
+
+    configs = (
+        data.get("evaluationConfig", {}).get("automated", {}).get("datasetMetricConfigs", [])
+        if isinstance(data.get("evaluationConfig"), dict)
+        else []
+    )
+    dataset_uris = []
+    if isinstance(configs, list):
+        for config in configs:
+            if not isinstance(config, dict):
+                continue
+            dataset = config.get("dataset") if isinstance(config.get("dataset"), dict) else {}
+            location = dataset.get("datasetLocation") if isinstance(dataset.get("datasetLocation"), dict) else {}
+            dataset_uris.append(s3_uri(location.get("s3Uri")))
+    if not any(f"/datasets/{prompt_id}/" in uri for uri in dataset_uris):
+        raise SystemExit(f"{rel}: dataset s3Uri must contain /datasets/{prompt_id}/")
+
+    output = data.get("outputDataConfig") if isinstance(data.get("outputDataConfig"), dict) else {}
+    if f"/results/{prompt_id}/" not in s3_uri(output.get("s3Uri")):
+        raise SystemExit(f"{rel}: output s3Uri must contain /results/{prompt_id}/")
+
+    metrics = (
+        data.get("evaluationConfig", {}).get("automated", {}).get("customMetricConfig", {}).get("customMetrics", [])
+        if isinstance(data.get("evaluationConfig"), dict)
+        else []
+    )
+    instructions = ""
+    if isinstance(metrics, list):
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            definition = metric.get("customMetricDefinition")
+            text = definition.get("instructions") if isinstance(definition, dict) else None
+            if isinstance(text, str):
+                instructions += "\n" + text
+    missing = [token for token in JUDGE_PLACEHOLDERS if token not in instructions]
+    if missing:
+        raise SystemExit(f"{rel}: judge instructions must contain {', '.join(missing)}")
 
 
 def check_eval_jobs(prompt_dir: Path) -> None:
@@ -308,48 +456,50 @@ def check_eval_jobs(prompt_dir: Path) -> None:
             .get("customMetricConfig", {})
             .get("customMetrics", [])
         )
-        if not isinstance(metrics, list):
-            continue
-        for metric in metrics:
-            if not isinstance(metric, dict):
-                continue
-            definition = metric.get("customMetricDefinition") or {}
-            if not isinstance(definition, dict):
-                continue
-            name = definition.get("name") or path.name
-            scales = definition.get("ratingScale")
-            if not isinstance(scales, list) or not scales:
-                raise SystemExit(
-                    f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale must list Pass and Fail"
-                )
-            values = []
-            for scale in scales:
-                if not isinstance(scale, dict):
+        if isinstance(metrics, list):
+            for metric in metrics:
+                if not isinstance(metric, dict):
                     continue
-                text = scale.get("definition", "")
-                if isinstance(text, str) and len(text) > RATING_DEFINITION_LIMIT:
+                definition = metric.get("customMetricDefinition") or {}
+                if not isinstance(definition, dict):
+                    continue
+                name = definition.get("name") or path.name
+                scales = definition.get("ratingScale")
+                if not isinstance(scales, list) or not scales:
                     raise SystemExit(
-                        f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale definition is "
-                        f"{len(text)} characters (max {RATING_DEFINITION_LIMIT})"
+                        f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale must list Pass and Fail"
                     )
-                value = scale.get("value")
-                string_value = value.get("stringValue") if isinstance(value, dict) else None
-                if string_value not in ("Pass", "Fail"):
+                values = []
+                for scale in scales:
+                    if not isinstance(scale, dict):
+                        continue
+                    text = scale.get("definition", "")
+                    if isinstance(text, str) and len(text) > RATING_DEFINITION_LIMIT:
+                        raise SystemExit(
+                            f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale definition is "
+                            f"{len(text)} characters (max {RATING_DEFINITION_LIMIT})"
+                        )
+                    value = scale.get("value")
+                    string_value = value.get("stringValue") if isinstance(value, dict) else None
+                    if string_value not in ("Pass", "Fail"):
+                        raise SystemExit(
+                            f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale values must be the strings Pass and Fail"
+                        )
+                    values.append(string_value)
+                if sorted(values) != ["Fail", "Pass"]:
                     raise SystemExit(
-                        f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale values must be the strings Pass and Fail"
+                        f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale must contain Pass and Fail exactly once"
                     )
-                values.append(string_value)
-            if sorted(values) != ["Fail", "Pass"]:
-                raise SystemExit(
-                    f"{prompt_dir.name}/eval-jobs/{path.name}: {name} ratingScale must contain Pass and Fail exactly once"
-                )
+        check_job_contract(prompt_dir, path, data)
 
 
 def render_prompt(prompt_dir: Path, check_only: bool) -> int:
     """Rebuild one prompt's datasets from its fixtures. Returns the number of stale rows."""
+    check_prompt_description(prompt_dir)
     system_prompt = read_prompt_text(prompt_dir, "system-prompt.txt")
     template = read_prompt_text(prompt_dir, "user-message-template.txt")
     variable = input_variable_name(template, prompt_dir.name)
+    assert_no_system_placeholders(prompt_dir.name, system_prompt)
     assert_single_wrap(prompt_dir.name, system_prompt, template, variable)
     sets = fixture_sets(prompt_dir)
     loaded = [(set_dir.name, load_set(set_dir, variable, prompt_dir.name)) for set_dir in sets]

@@ -201,6 +201,42 @@ class BuildEvalReportTest(unittest.TestCase):
         )
         self.assertEqual(cases["regression-01"]["category"], "regression")
 
+    def test_region_comes_from_the_job_arn(self):
+        self.assertEqual(
+            report.region_of_job_arn("arn:aws:bedrock:us-west-2:123456789012:evaluation-job/abc"),
+            "us-west-2",
+        )
+        with self.assertRaises(SystemExit) as ctx:
+            report.region_of_job_arn("not-an-arn")
+        self.assertIn("not a Bedrock evaluation job ARN", str(ctx.exception))
+
+    def test_fixture_notes_reach_the_case(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "fixtures" / "golden"
+            folder.mkdir(parents=True)
+            (folder / "01.json").write_text(
+                json.dumps({"id": "golden-01", "description": "praise", "notes": "expectation corrected"}),
+                encoding="utf-8",
+            )
+            meta = report.load_fixture_metadata(root)
+        self.assertEqual(meta["golden-01"]["notes"], "expectation corrected")
+        datasets = [
+            {"prompt": wrapped("hello"), "fixtureId": "golden-01", "referenceResponse": "{}", "category": "golden"}
+        ]
+        cases = report.build_cases(
+            [
+                {
+                    "job_name": "job",
+                    "model_id": "model",
+                    "rows": [result_row("hello", scores=[{"metricName": "LabelMatch", "result": "Pass"}])],
+                }
+            ],
+            datasets,
+            meta,
+        )
+        self.assertEqual(cases["golden-01"]["notes"], "expectation corrected")
+
 
 if __name__ == "__main__":
     unittest.main()

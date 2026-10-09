@@ -40,6 +40,8 @@ const invoke = statements.find((statement) => (statement as { Sid?: string }).Si
 assert.ok(invoke)
 assert.ok(invoke.Action?.includes("bedrock:InvokeModel"))
 assert.ok(invoke.Action?.includes("bedrock:GetInferenceProfile"))
+assert.ok(invoke.Action?.includes("bedrock:CreateModelInvocationJob"))
+assert.ok(invoke.Action?.includes("bedrock:StopModelInvocationJob"))
 assert.equal(invoke.Resource, "*")
 
 const prompts = template.findResources("AWS::Bedrock::Prompt")

@@ -1,5 +1,5 @@
 {
-  "jobName": "example-golden",
+  "jobName": "<JOB_NAME>",
   "jobDescription": "Evaluate the placeholder labelling prompt against the golden dataset.",
   "roleArn": "<EVAL_JOB_ROLE_ARN>",
   "evaluationConfig": {

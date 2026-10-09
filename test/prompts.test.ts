@@ -3,6 +3,8 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import {
+  assertLocalJobsMatchModel,
+  assertNoSystemPlaceholders,
   assertUniqueLogicalIds,
   deployedPromptText,
   discoverPrompts,
@@ -45,6 +47,9 @@ assert.equal(
   "Be brief.\n\n<<<UNTRUSTED_CONTENT>>>\n{{note}}\n<<<END_UNTRUSTED_CONTENT>>>",
 )
 
+assert.doesNotThrow(() => assertNoSystemPlaceholders("Be brief.", "example"))
+assert.throws(() => assertNoSystemPlaceholders("Hello {{name}}", "example"), /system-prompt.txt contains a placeholder/)
+
 assert.deepEqual(inputVariableNames("{{note}}", "example"), ["note"])
 assert.throws(() => inputVariableNames("{{note}}\n{{note}}", "example"), /exactly one placeholder/)
 assert.throws(() => inputVariableNames("{{note}} {{email}}", "example"), /exactly one placeholder/)
@@ -75,6 +80,25 @@ assert.throws(() => inputVariableNames("{{note}} {{email}}", "example"), /exactl
   const root = tempPrompts()
   withPrompt(root, "empty", {})
   assert.throws(() => discoverPrompts(root), /description must be a non-empty string/)
+}
+
+{
+  const root = tempPrompts()
+  withPrompt(root, "long", { description: "x".repeat(201) })
+  assert.throws(() => discoverPrompts(root), /201 characters/)
+}
+
+{
+  const root = tempPrompts()
+  const dir = path.join(root, "local")
+  fs.mkdirSync(path.join(dir, "eval-jobs"), { recursive: true })
+  const model = "us.anthropic.claude-sonnet-4-6"
+  fs.writeFileSync(
+    path.join(dir, "eval-jobs", "golden-job.local.json"),
+    JSON.stringify({ inferenceConfig: { models: [{ bedrockModel: { modelIdentifier: model } }] } }),
+  )
+  assert.doesNotThrow(() => assertLocalJobsMatchModel(dir, "local", model))
+  assert.throws(() => assertLocalJobsMatchModel(dir, "local", "other-model"), /modelIdentifier must be/)
 }
 
 {

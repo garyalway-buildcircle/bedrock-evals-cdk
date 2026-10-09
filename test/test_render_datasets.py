@@ -12,6 +12,44 @@ render_datasets = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(render_datasets)
 
 
+def contract_job(prompt_id: str, **overrides: object) -> dict:
+    job = {
+        "jobName": "<JOB_NAME>",
+        "jobDescription": "café",
+        "evaluationConfig": {
+            "automated": {
+                "datasetMetricConfigs": [
+                    {
+                        "dataset": {
+                            "datasetLocation": {"s3Uri": f"s3://bucket/datasets/{prompt_id}/golden.jsonl"}
+                        }
+                    }
+                ],
+                "customMetricConfig": {
+                    "customMetrics": [
+                        {
+                            "customMetricDefinition": {
+                                "name": "LabelMatch",
+                                "instructions": "Prompt: {{prompt}}\nResponse: {{prediction}}\nReference: {{ground_truth}}",
+                                "ratingScale": [
+                                    {"definition": "ok", "value": {"stringValue": "Pass"}},
+                                    {"definition": "no", "value": {"stringValue": "Fail"}},
+                                ],
+                            }
+                        }
+                    ]
+                },
+            }
+        },
+        "inferenceConfig": {
+            "models": [{"bedrockModel": {"modelIdentifier": "<MODEL_UNDER_TEST_ID>"}}]
+        },
+        "outputDataConfig": {"s3Uri": f"s3://bucket/results/{prompt_id}/golden/"},
+    }
+    job.update(overrides)
+    return job
+
+
 def write_prompt(root: Path, note: str = "hello", expected: dict | None = None) -> None:
     expected = expected if expected is not None else {"label": "neutral"}
     (root / "system-prompt.txt").write_text("Be brief.\n")
@@ -191,35 +229,15 @@ class RenderDatasetsTest(unittest.TestCase):
             (root / "prompt.json").write_text(json.dumps({"description": "t", "temperature": 0, "maxTokens": 4000}))
             jobs = root / "eval-jobs"
             jobs.mkdir()
-            (jobs / "golden-job.json").write_text(
-                json.dumps(
-                    {
-                        "inferenceConfig": {"models": [{"bedrockModel": {"modelIdentifier": "m"}}]},
-                        "evaluationConfig": {
-                            "automated": {
-                                "customMetricConfig": {
-                                    "customMetrics": [
-                                        {
-                                            "customMetricDefinition": {
-                                                "name": "LabelMatch",
-                                                "ratingScale": [
-                                                    {"definition": "ok", "value": {"stringValue": "Pass"}},
-                                                    {"definition": "no", "value": {"stringValue": "Fail"}},
-                                                ],
-                                            }
-                                        }
-                                    ]
-                                }
-                            }
-                        },
-                    }
-                )
-            )
+            (jobs / "golden-job.json").write_text(json.dumps(contract_job(root.name), ensure_ascii=False))
             with self.assertRaises(SystemExit) as ctx:
                 render_datasets.render_prompt(root, check_only=True)
             self.assertIn("inferenceParams", str(ctx.exception))
             render_datasets.render_prompt(root, check_only=False)
-            updated = json.loads((jobs / "golden-job.json").read_text())
+            raw = (jobs / "golden-job.json").read_text()
+            self.assertIn("café", raw)
+            self.assertNotIn("\\u00e9", raw)
+            updated = json.loads(raw)
             self.assertEqual(
                 updated["inferenceConfig"]["models"][0]["bedrockModel"]["inferenceParams"],
                 '{"inferenceConfig":{"maxTokens":4000,"temperature":0}}',
@@ -268,6 +286,41 @@ class RenderDatasetsTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as ctx:
                 render_datasets.render_prompt(root, check_only=True)
         self.assertIn("Pass and Fail", str(ctx.exception))
+
+    def test_system_prompt_placeholder_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            (root / "system-prompt.txt").write_text("Hello {{name}}\n")
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("system-prompt.txt contains a placeholder", str(ctx.exception))
+
+    def test_description_over_200_characters_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            (root / "prompt.json").write_text(json.dumps({"description": "x" * 201}))
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("201 characters", str(ctx.exception))
+
+    def test_tracked_job_name_must_stay_a_placeholder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            (root / "prompt.json").write_text(json.dumps({"description": "t", "temperature": 0, "maxTokens": 4000}))
+            jobs = root / "eval-jobs"
+            jobs.mkdir()
+            job = contract_job(root.name)
+            job["jobName"] = "example-golden"
+            job["inferenceConfig"]["models"][0]["bedrockModel"]["inferenceParams"] = (
+                '{"inferenceConfig":{"maxTokens":4000,"temperature":0}}'
+            )
+            (jobs / "golden-job.json").write_text(json.dumps(job))
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("<JOB_NAME>", str(ctx.exception))
 
 
 if __name__ == "__main__":

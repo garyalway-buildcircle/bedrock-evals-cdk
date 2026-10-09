@@ -15,6 +15,7 @@ see `docs/setup.md`. Capture the Outputs
 
 ```bash
 aws cloudformation describe-stacks --stack-name BedrockPromptEvals \
+  --region us-east-1 \
   --query "Stacks[0].Outputs" --output table
 ```
 
@@ -38,16 +39,17 @@ Replace:
   `docs/setup.md` step 4; listed ≠ usable.
 - `<JUDGE_MODEL_ID>` — a stronger model than the one under test. Bare foundation-model ID or
   system profile only, not an application-inference-profile ARN (`docs/setup.md` step 4).
-- `jobName` — ≤63 characters, unique in the account (case-insensitive). Append a unix
-  timestamp; keep the prefix short (`example-edge-<ts>`).
+- `<JOB_NAME>` — ≤63 characters, unique in the account (case-insensitive). Append a unix
+  timestamp; keep the prefix short (`example-edge-<ts>`). The tracked template keeps the
+  placeholder so it cannot be submitted twice.
 
 Run jobs in `us-east-1` against Claude Sonnet 4.6. Never submit two at once — they throttle
 each other (`docs/setup.md` point 6).
 
 ```bash
-aws bedrock create-evaluation-job --cli-input-json file://prompts/$P/eval-jobs/golden-job.local.json
-aws bedrock get-evaluation-job --job-identifier <jobArn>
-aws bedrock create-evaluation-job --cli-input-json file://prompts/$P/eval-jobs/edge-case-job.local.json
+aws bedrock create-evaluation-job --region us-east-1 --cli-input-json file://prompts/$P/eval-jobs/golden-job.local.json
+aws bedrock get-evaluation-job --region us-east-1 --job-identifier <jobArn>
+aws bedrock create-evaluation-job --region us-east-1 --cli-input-json file://prompts/$P/eval-jobs/edge-case-job.local.json
 ```
 
 Per-row results land at
@@ -61,8 +63,10 @@ output bucket (`iam/steady-state-policy.json`, `ReadEvaluationResults`).
 python3 scripts/build-eval-report.py <job-arn> [<job-arn> ...] [--prompt $P]
 ```
 
-Default output: `reports/<prompt>-eval-report.html` (gitignored, opens in the browser). Pass
-several ARNs to compare runs. Pass `--prompt` for anything other than `example`.
+The script reads the region from each job ARN and passes `--region` on every AWS call, so a
+second region does not depend on the CLI default. Default output:
+`reports/<prompt>-eval-report.html` (gitignored, opens in the browser). Pass several ARNs to
+compare runs. Pass `--prompt` for anything other than `example`.
 
 Both S3 buckets expire objects after seven days. Build the report before then.
 Redeploy if the datasets have expired.
@@ -89,14 +93,14 @@ model sees.
    Refresh the `.local.json` copy before you submit it. `--check` exits non-zero if a dataset file
    is not byte-for-byte what the fixtures and the current prompt text would write, or if those
    inference parameters differ, and it writes nothing. Any other flag, including a typo, is an error.
-3. `npx cdk deploy -c modelUnderTestId=... -c nameSuffix=-use1` — synth runs that `--check` first
+3. `AWS_REGION=us-east-1 npx cdk deploy -c modelUnderTestId=... -c nameSuffix=-use1` — synth runs that `--check` first
    and refuses a stale dataset. `cdk watch` does the same. Deploy uploads `datasets/<prompt>/`
    and updates every Prompt resource. The resource's user message is the dataset `prompt` string
    with the `{{variable}}` left in. Its `temperature` and `maxTokens` come from `prompt.json`,
    the same values the job template's `inferenceParams` carry.
 4. Re-run both jobs, then build the report.
 5. Golden Fail: prompt regression or a bad fixture. Fix the fixture only if its expectation
-   is wrong, and say why in `notes`.
+   is wrong, and say why in its optional `notes` field. The report shows that field when it is set.
 6. Edge-case Fail: blocking. Do not ship until it passes.
 
 ## Tear down
