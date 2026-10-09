@@ -211,7 +211,7 @@ def match_fixture(prompt, datasets, row_index):
     if len(matches) == 1:
         row = matches[0]
         return row["fixtureId"], row.get("referenceResponse", ""), row.get("category", "")
-    return f"unknown-fixture-{row_index}", "", ""
+    return None
 
 
 def category_for(fixture_id, dataset_category, fixture_meta):
@@ -270,23 +270,24 @@ def build_cases(job_results, datasets, fixture_meta):
     category_run_counters = {}
     for result in job_results:
         matched = []
+        unmatched = []
         for index, row in enumerate(result["rows"], start=1):
             input_record = row.get("inputRecord") if isinstance(row, dict) else None
             prompt = input_record.get("prompt") if isinstance(input_record, dict) else None
-            if not isinstance(prompt, str):
-                matched.append((f"unknown-fixture-{index}", "unknown", "", row if isinstance(row, dict) else {}))
+            found = match_fixture(prompt, datasets, index) if isinstance(prompt, str) else None
+            if found is None:
+                unmatched.append(f"row {index}")
                 continue
-            fid, ref, dataset_category = match_fixture(prompt, datasets, index)
+            fid, ref, dataset_category = found
             matched.append((fid, category_for(fid, dataset_category, fixture_meta), ref, row))
 
-        if not matched:
+        if not matched and not unmatched:
             raise SystemExit(f"{result['job_name']}: the job returned no rows. The report was not written.")
 
-        unknown = [fid for fid, *_ in matched if str(fid).startswith("unknown-fixture")]
-        if unknown:
+        if unmatched:
             raise SystemExit(
-                f"{result['job_name']}: {len(unknown)} of {len(matched)} row(s) did not match a dataset fixture "
-                f"({', '.join(unknown)}). Those rows would be missing from the report. "
+                f"{result['job_name']}: {len(unmatched)} of {len(matched) + len(unmatched)} row(s) did not match a dataset fixture "
+                f"({', '.join(unmatched)}). Those rows would be missing from the report. "
                 "Pass the --prompt these jobs were run for."
             )
         categories = {category for _, category, _, _ in matched}

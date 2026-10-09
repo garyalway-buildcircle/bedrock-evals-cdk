@@ -40,10 +40,13 @@ prompts/<prompt>/
 5. Copy `prompts/example/eval-jobs/*.json` and rewrite the judge metrics for this
    output schema. `ratingScale` values are the strings `Pass` and `Fail`, each once.
    `ratingScale[].definition` must stay under 100 characters (`docs/runbook.md`).
-   Point the S3 URIs at `datasets/<prompt>/<set>.jsonl` and `results/<prompt>/<set>/`.
-   Keep `jobName` as `<JOB_NAME>` in the tracked file. The `.local.json` copy sets a name
-   short enough for a timestamp (63-character Bedrock limit). Judge `instructions` must contain
-   `{{prompt}}`, `{{prediction}}`, and `{{ground_truth}}`.
+   Name the file `<set>-job.json`. Its dataset URI is exactly
+   `s3://<DATASET_BUCKET_NAME>/datasets/<prompt>/<set>.jsonl` and its output URI is exactly
+   `s3://<OUTPUT_BUCKET_NAME>/results/<prompt>/<set>/`. The tracked file also keeps
+   `<EVAL_JOB_ROLE_ARN>`, `<JOB_NAME>`, `<MODEL_UNDER_TEST_ID>`, and `<JUDGE_MODEL_ID>`.
+   The `.local.json` copy fills those in. `jobName` there must be short enough for a timestamp
+   (63-character Bedrock limit). Each metric's `instructions` must contain `{{prompt}}`,
+   `{{prediction}}`, and `{{ground_truth}}`.
 6. `AWS_REGION=us-east-1 npx cdk deploy -c modelUnderTestId=... -c nameSuffix=-use1`, run both jobs, build the report
    with `--prompt <prompt>`.
 7. Write `readme.md` and add the table row in the root `README.md`.

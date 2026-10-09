@@ -127,13 +127,14 @@ aws bedrock list-foundation-models --region <REGION> \
    inference profile`. Check the `inferenceTypesSupported` field — if `ON_DEMAND` is absent, use
    the `us.`/`eu.`/`global.` profile ID instead:
    ```bash
-   aws bedrock list-foundation-models --by-provider anthropic \
+   aws bedrock list-foundation-models --region <REGION> --by-provider anthropic \
      --query "modelSummaries[].[modelId,inferenceTypesSupported]" --output text
    ```
 3. **Built-in cross-region profiles need model access in every region they fan out to**, not just
    your own. Check the fan-out first:
    ```bash
-   aws bedrock get-inference-profile --inference-profile-identifier us.anthropic.claude-X \
+   aws bedrock get-inference-profile --region <REGION> \
+     --inference-profile-identifier us.anthropic.claude-X \
      --query "models[].modelArn"
    ```
    These profiles span anywhere from 3 to 7 regions. The profile is unusable unless *all* of them
@@ -188,9 +189,10 @@ AWS_PROFILE=<your-profile> AWS_REGION=us-east-1 npx cdk deploy \
 `<NAME_SUFFIX>` in the steady-state policy has to be this same `-use1`. Omitting
 `-c modelUnderTestId=...` fails at synth. The stack does not deploy a placeholder model id.
 `npm run deploy` and `npm run destroy` are plain `cdk deploy` and `cdk destroy`. They still need
-the context flags above, and destroy asks for confirmation. Recommended CDK feature flags live in
-`cdk.flags.json` and are loaded by `bin/app.ts`, so `cdk synth` does not warn that they are
-unconfigured. `-c` values still override them.
+the context flags above, and destroy asks for confirmation. `bin/app.ts` sets every CDK feature
+flag whose default still differs from the recommendation, using the values shipped with
+`aws-cdk-lib`, so a CLI upgrade does not bring the unconfigured-flag warning back. `-c` values
+still override them.
 
 Note the `Outputs`: `DatasetBucketName`, `OutputBucketName`, `EvalJobRoleArn`, and one
 `PromptArn<Name>` per directory under `prompts/`.

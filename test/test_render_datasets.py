@@ -15,13 +15,16 @@ spec.loader.exec_module(render_datasets)
 def contract_job(prompt_id: str, **overrides: object) -> dict:
     job = {
         "jobName": "<JOB_NAME>",
+        "roleArn": "<EVAL_JOB_ROLE_ARN>",
         "jobDescription": "café",
         "evaluationConfig": {
             "automated": {
                 "datasetMetricConfigs": [
                     {
                         "dataset": {
-                            "datasetLocation": {"s3Uri": f"s3://bucket/datasets/{prompt_id}/golden.jsonl"}
+                            "datasetLocation": {
+                                "s3Uri": f"s3://<DATASET_BUCKET_NAME>/datasets/{prompt_id}/golden.jsonl"
+                            }
                         }
                     }
                 ],
@@ -37,14 +40,17 @@ def contract_job(prompt_id: str, **overrides: object) -> dict:
                                 ],
                             }
                         }
-                    ]
+                    ],
+                    "evaluatorModelConfig": {
+                        "bedrockEvaluatorModels": [{"modelIdentifier": "<JUDGE_MODEL_ID>"}]
+                    },
                 },
             }
         },
         "inferenceConfig": {
             "models": [{"bedrockModel": {"modelIdentifier": "<MODEL_UNDER_TEST_ID>"}}]
         },
-        "outputDataConfig": {"s3Uri": f"s3://bucket/results/{prompt_id}/golden/"},
+        "outputDataConfig": {"s3Uri": f"s3://<OUTPUT_BUCKET_NAME>/results/{prompt_id}/golden/"},
     }
     job.update(overrides)
     return job
@@ -52,6 +58,7 @@ def contract_job(prompt_id: str, **overrides: object) -> dict:
 
 def write_prompt(root: Path, note: str = "hello", expected: dict | None = None) -> None:
     expected = expected if expected is not None else {"label": "neutral"}
+    (root / "prompt.json").write_text(json.dumps({"description": "Placeholder"}))
     (root / "system-prompt.txt").write_text("Be brief.\n")
     (root / "user-message-template.txt").write_text("<<<UNTRUSTED_CONTENT>>>\n{{note}}\n<<<END_UNTRUSTED_CONTENT>>>\n")
     fixture_dir = root / "fixtures" / "golden"
@@ -321,6 +328,97 @@ class RenderDatasetsTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as ctx:
                 render_datasets.render_prompt(root, check_only=True)
         self.assertIn("<JOB_NAME>", str(ctx.exception))
+
+    def test_tracked_job_must_keep_role_and_bucket_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            jobs = root / "eval-jobs"
+            jobs.mkdir()
+            job = contract_job(root.name)
+            job["roleArn"] = "arn:aws:iam::123456789012:role/eval"
+            job["inferenceConfig"]["models"][0]["bedrockModel"]["inferenceParams"] = (
+                '{"inferenceConfig":{"maxTokens":4000,"temperature":0}}'
+            )
+            (jobs / "golden-job.json").write_text(json.dumps(job))
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("<EVAL_JOB_ROLE_ARN>", str(ctx.exception))
+
+    def test_every_dataset_uri_must_be_that_sets_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            jobs = root / "eval-jobs"
+            jobs.mkdir()
+            job = contract_job(root.name)
+            job["evaluationConfig"]["automated"]["datasetMetricConfigs"].append(
+                {
+                    "dataset": {
+                        "datasetLocation": {
+                            "s3Uri": f"s3://<DATASET_BUCKET_NAME>/other/datasets/{root.name}/golden.jsonl"
+                        }
+                    }
+                }
+            )
+            job["inferenceConfig"]["models"][0]["bedrockModel"]["inferenceParams"] = (
+                '{"inferenceConfig":{"maxTokens":4000,"temperature":0}}'
+            )
+            (jobs / "golden-job.json").write_text(json.dumps(job))
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn(f"datasets/{root.name}/golden.jsonl", str(ctx.exception))
+
+    def test_job_file_name_selects_the_dataset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            jobs = root / "eval-jobs"
+            jobs.mkdir()
+            job = contract_job(root.name)
+            job["inferenceConfig"]["models"][0]["bedrockModel"]["inferenceParams"] = (
+                '{"inferenceConfig":{"maxTokens":4000,"temperature":0}}'
+            )
+            (jobs / "edge-case-job.json").write_text(json.dumps(job))
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn(f"datasets/{root.name}/edge-case.jsonl", str(ctx.exception))
+
+    def test_each_metric_needs_the_judge_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            jobs = root / "eval-jobs"
+            jobs.mkdir()
+            job = contract_job(root.name)
+            job["evaluationConfig"]["automated"]["customMetricConfig"]["customMetrics"].append(
+                {
+                    "customMetricDefinition": {
+                        "name": "Other",
+                        "instructions": "Prompt: {{prompt}}",
+                        "ratingScale": [
+                            {"definition": "ok", "value": {"stringValue": "Pass"}},
+                            {"definition": "no", "value": {"stringValue": "Fail"}},
+                        ],
+                    }
+                }
+            )
+            job["inferenceConfig"]["models"][0]["bedrockModel"]["inferenceParams"] = (
+                '{"inferenceConfig":{"maxTokens":4000,"temperature":0}}'
+            )
+            (jobs / "golden-job.json").write_text(json.dumps(job))
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("{{prediction}}", str(ctx.exception))
+
+    def test_empty_description_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_prompt(root)
+            (root / "prompt.json").write_text(json.dumps({"description": "  "}))
+            with self.assertRaises(SystemExit) as ctx:
+                render_datasets.render_prompt(root, check_only=True)
+        self.assertIn("non-empty string", str(ctx.exception))
 
 
 if __name__ == "__main__":

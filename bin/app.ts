@@ -1,14 +1,9 @@
 #!/usr/bin/env node
-import * as fs from "node:fs"
-import * as path from "node:path"
 import * as cdk from "aws-cdk-lib"
 import { EvalHarnessStack } from "../lib/eval-harness-stack"
+import { recommendedFeatureFlagContext } from "../lib/feature-flags"
 
-const featureFlags = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "..", "cdk.flags.json"), "utf-8"),
-) as Record<string, unknown>
-
-const app = new cdk.App({ context: featureFlags })
+const app = new cdk.App({ context: recommendedFeatureFlagContext() })
 
 new EvalHarnessStack(app, "BedrockPromptEvals", {
   env: {

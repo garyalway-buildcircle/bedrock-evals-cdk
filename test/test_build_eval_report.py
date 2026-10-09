@@ -65,7 +65,7 @@ class BuildEvalReportTest(unittest.TestCase):
                 {"golden-01": {"category": "golden", "description": "", "rule": ""}},
             )
         self.assertIn("1 of 2", str(ctx.exception))
-        self.assertIn("unknown-fixture-2", str(ctx.exception))
+        self.assertIn("row 2", str(ctx.exception))
 
     def test_dataset_category_keeps_a_row_when_the_fixture_file_is_gone(self):
         datasets = [
@@ -236,6 +236,28 @@ class BuildEvalReportTest(unittest.TestCase):
             meta,
         )
         self.assertEqual(cases["golden-01"]["notes"], "expectation corrected")
+
+    def test_fixture_id_prefixed_unknown_fixture_still_matches(self):
+        datasets = [
+            {
+                "prompt": wrapped("hello"),
+                "fixtureId": "unknown-fixture-1",
+                "referenceResponse": "{}",
+                "category": "golden",
+            }
+        ]
+        cases = report.build_cases(
+            [
+                {
+                    "job_name": "job",
+                    "model_id": "model",
+                    "rows": [result_row("hello", scores=[{"metricName": "LabelMatch", "result": "Pass"}])],
+                }
+            ],
+            datasets,
+            {"unknown-fixture-1": {"category": "golden", "description": "", "rule": "", "notes": ""}},
+        )
+        self.assertIn("unknown-fixture-1", cases)
 
 
 if __name__ == "__main__":

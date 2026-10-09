@@ -2,9 +2,11 @@ import assert from "node:assert/strict"
 import * as cdk from "aws-cdk-lib"
 import { Template } from "aws-cdk-lib/assertions"
 import { EvalHarnessStack } from "../lib/eval-harness-stack"
+import { recommendedFeatureFlagContext } from "../lib/feature-flags"
 
 const app = new cdk.App({
   context: {
+    ...recommendedFeatureFlagContext(),
     modelUnderTestId: "us.anthropic.claude-sonnet-4-6",
     nameSuffix: "-use1",
   },

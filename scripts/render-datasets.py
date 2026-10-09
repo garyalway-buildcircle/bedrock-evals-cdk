@@ -33,6 +33,10 @@ DEFAULT_MAX_TOKENS = 4000
 MAX_MAX_TOKENS = 200_000
 MODEL_PLACEHOLDER = "<MODEL_UNDER_TEST_ID>"
 JOB_NAME_PLACEHOLDER = "<JOB_NAME>"
+ROLE_PLACEHOLDER = "<EVAL_JOB_ROLE_ARN>"
+DATASET_BUCKET_PLACEHOLDER = "<DATASET_BUCKET_NAME>"
+OUTPUT_BUCKET_PLACEHOLDER = "<OUTPUT_BUCKET_NAME>"
+JUDGE_PLACEHOLDER = "<JUDGE_MODEL_ID>"
 # CreateEvaluationJob JobName: 1-63 chars, and this pattern. Length is checked separately
 # because a group in the pattern can be more than one character.
 JOB_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}$")
@@ -357,7 +361,7 @@ def sync_inference_params(prompt_dir: Path, check_only: bool) -> None:
 def check_prompt_description(prompt_dir: Path) -> None:
     path = prompt_dir / "prompt.json"
     if not path.is_file():
-        return
+        raise SystemExit(f"{prompt_dir.name}/prompt.json is missing")
     try:
         data = json.loads(path.read_text())
     except json.JSONDecodeError as err:
@@ -365,21 +369,81 @@ def check_prompt_description(prompt_dir: Path) -> None:
     if not isinstance(data, dict):
         raise SystemExit(f"{prompt_dir.name}/prompt.json must be a JSON object")
     description = data.get("description")
-    if isinstance(description, str) and len(description) > DESCRIPTION_LIMIT:
+    if not isinstance(description, str) or description.strip() == "":
+        raise SystemExit(f"{prompt_dir.name}/prompt.json description must be a non-empty string")
+    if len(description) > DESCRIPTION_LIMIT:
         raise SystemExit(
             f"{prompt_dir.name}/prompt.json description is {len(description)} characters (max {DESCRIPTION_LIMIT})"
         )
 
 
-def s3_uri(value: object) -> str:
-    return value if isinstance(value, str) else ""
+def nested(data: object, *keys: str) -> object:
+    current = data
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def job_set_name(path: Path) -> str:
+    """golden-job.json and golden-job.local.json both belong to the golden dataset."""
+    name = path.name
+    if name.endswith(".local.json"):
+        stem = name[: -len(".local.json")]
+    elif name.endswith(".json"):
+        stem = name[: -len(".json")]
+    else:
+        stem = path.stem
+    if not stem.endswith("-job") or stem == "-job":
+        raise SystemExit(f"{name}: eval job file must be named <set>-job.json")
+    return stem[: -len("-job")]
+
+
+def parse_s3_uri(uri: str) -> tuple[str, list[str]] | None:
+    """Bucket plus key segments. `..` is rejected so a substring cannot stand in for the path."""
+    if not uri.startswith("s3://"):
+        return None
+    bucket, sep, key = uri[len("s3://") :].partition("/")
+    if not bucket or sep != "/" or ".." in key.split("/"):
+        return None
+    return bucket, [part for part in key.split("/") if part not in ("", ".")]
+
+
+def require_token(value: object, *, local: bool, placeholder: str, rel: str, what: str) -> None:
+    if local:
+        if not isinstance(value, str) or not value or "<" in value:
+            raise SystemExit(f"{rel}: {what} must be filled in, not {placeholder}")
+    elif value != placeholder:
+        raise SystemExit(f"{rel}: {what} must stay {placeholder}")
+
+
+def check_dataset_uri(uri: object, prompt_id: str, set_name: str, local: bool, rel: str) -> None:
+    expected = ["datasets", prompt_id, f"{set_name}.jsonl"]
+    parsed = parse_s3_uri(uri) if isinstance(uri, str) else None
+    if parsed is None or parsed[1] != expected:
+        raise SystemExit(
+            f"{rel}: dataset s3Uri must be s3://<bucket>/datasets/{prompt_id}/{set_name}.jsonl"
+        )
+    require_token(parsed[0], local=local, placeholder=DATASET_BUCKET_PLACEHOLDER, rel=rel, what="dataset bucket")
+
+
+def check_output_uri(uri: object, prompt_id: str, set_name: str, local: bool, rel: str) -> None:
+    expected = ["results", prompt_id, set_name]
+    parsed = parse_s3_uri(uri) if isinstance(uri, str) and uri.endswith("/") else None
+    if parsed is None or parsed[1] != expected:
+        raise SystemExit(
+            f"{rel}: output s3Uri must be s3://<bucket>/results/{prompt_id}/{set_name}/"
+        )
+    require_token(parsed[0], local=local, placeholder=OUTPUT_BUCKET_PLACEHOLDER, rel=rel, what="output bucket")
 
 
 def check_job_contract(prompt_dir: Path, path: Path, data: dict) -> None:
-    """Tracked templates stay unsubmittable. A .local.json must be ready to submit."""
+    """Tracked templates keep every placeholder. A .local.json must have them filled in."""
     rel = f"{prompt_dir.name}/eval-jobs/{path.name}"
     local = ".local." in path.name
     prompt_id = prompt_dir.name
+    set_name = job_set_name(path)
 
     job_name = data.get("jobName")
     if local:
@@ -399,52 +463,54 @@ def check_job_contract(prompt_dir: Path, path: Path, data: dict) -> None:
             "Copy the file to *.local.json and set a unique name there."
         )
 
-    models = data.get("inferenceConfig", {}).get("models") if isinstance(data.get("inferenceConfig"), dict) else None
+    require_token(data.get("roleArn"), local=local, placeholder=ROLE_PLACEHOLDER, rel=rel, what="roleArn")
+
+    models = nested(data, "inferenceConfig", "models")
     bedrock_model = models[0].get("bedrockModel") if isinstance(models, list) and models and isinstance(models[0], dict) else None
     model_id = bedrock_model.get("modelIdentifier") if isinstance(bedrock_model, dict) else None
-    if local:
-        if not isinstance(model_id, str) or not model_id or "<" in model_id:
-            raise SystemExit(f"{rel}: modelIdentifier must be the real model id, not a placeholder")
-    elif model_id != MODEL_PLACEHOLDER:
-        raise SystemExit(f"{rel}: modelIdentifier must stay {MODEL_PLACEHOLDER}")
-
-    configs = (
-        data.get("evaluationConfig", {}).get("automated", {}).get("datasetMetricConfigs", [])
-        if isinstance(data.get("evaluationConfig"), dict)
-        else []
+    require_token(
+        model_id, local=local, placeholder=MODEL_PLACEHOLDER, rel=rel, what="modelIdentifier"
     )
-    dataset_uris = []
-    if isinstance(configs, list):
-        for config in configs:
-            if not isinstance(config, dict):
-                continue
-            dataset = config.get("dataset") if isinstance(config.get("dataset"), dict) else {}
-            location = dataset.get("datasetLocation") if isinstance(dataset.get("datasetLocation"), dict) else {}
-            dataset_uris.append(s3_uri(location.get("s3Uri")))
-    if not any(f"/datasets/{prompt_id}/" in uri for uri in dataset_uris):
-        raise SystemExit(f"{rel}: dataset s3Uri must contain /datasets/{prompt_id}/")
 
-    output = data.get("outputDataConfig") if isinstance(data.get("outputDataConfig"), dict) else {}
-    if f"/results/{prompt_id}/" not in s3_uri(output.get("s3Uri")):
-        raise SystemExit(f"{rel}: output s3Uri must contain /results/{prompt_id}/")
+    configs = nested(data, "evaluationConfig", "automated", "datasetMetricConfigs")
+    if not isinstance(configs, list) or not configs:
+        raise SystemExit(
+            f"{rel}: dataset s3Uri must be s3://<bucket>/datasets/{prompt_id}/{set_name}.jsonl"
+        )
+    for config in configs:
+        dataset = config.get("dataset") if isinstance(config, dict) else None
+        location = dataset.get("datasetLocation") if isinstance(dataset, dict) else None
+        uri = location.get("s3Uri") if isinstance(location, dict) else None
+        check_dataset_uri(uri, prompt_id, set_name, local, rel)
 
-    metrics = (
-        data.get("evaluationConfig", {}).get("automated", {}).get("customMetricConfig", {}).get("customMetrics", [])
-        if isinstance(data.get("evaluationConfig"), dict)
-        else []
+    output = nested(data, "outputDataConfig")
+    output_uri = output.get("s3Uri") if isinstance(output, dict) else None
+    check_output_uri(output_uri, prompt_id, set_name, local, rel)
+
+    judges = nested(
+        data,
+        "evaluationConfig",
+        "automated",
+        "customMetricConfig",
+        "evaluatorModelConfig",
+        "bedrockEvaluatorModels",
     )
-    instructions = ""
-    if isinstance(metrics, list):
-        for metric in metrics:
-            if not isinstance(metric, dict):
-                continue
-            definition = metric.get("customMetricDefinition")
-            text = definition.get("instructions") if isinstance(definition, dict) else None
-            if isinstance(text, str):
-                instructions += "\n" + text
-    missing = [token for token in JUDGE_PLACEHOLDERS if token not in instructions]
-    if missing:
-        raise SystemExit(f"{rel}: judge instructions must contain {', '.join(missing)}")
+    if not isinstance(judges, list) or not judges:
+        raise SystemExit(f"{rel}: judge modelIdentifier must stay {JUDGE_PLACEHOLDER}")
+    for judge in judges:
+        judge_id = judge.get("modelIdentifier") if isinstance(judge, dict) else None
+        require_token(judge_id, local=local, placeholder=JUDGE_PLACEHOLDER, rel=rel, what="judge modelIdentifier")
+
+    metrics = nested(data, "evaluationConfig", "automated", "customMetricConfig", "customMetrics")
+    if not isinstance(metrics, list) or not metrics:
+        raise SystemExit(f"{rel}: judge instructions must contain {', '.join(JUDGE_PLACEHOLDERS)}")
+    for metric in metrics:
+        definition = metric.get("customMetricDefinition") if isinstance(metric, dict) else None
+        name = definition.get("name") if isinstance(definition, dict) and definition.get("name") else path.name
+        text = definition.get("instructions") if isinstance(definition, dict) else None
+        missing = [token for token in JUDGE_PLACEHOLDERS if not isinstance(text, str) or token not in text]
+        if missing:
+            raise SystemExit(f"{rel}: {name} instructions must contain {', '.join(missing)}")
 
 
 def check_eval_jobs(prompt_dir: Path) -> None:

@@ -4,8 +4,7 @@
     "include": [
       "bin/**",
       "lib/**",
-      "prompts/**",
-      "cdk.flags.json"
+      "prompts/**"
     ],
     "exclude": [
       "node_modules",
