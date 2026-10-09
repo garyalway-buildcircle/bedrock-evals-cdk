@@ -33,7 +33,7 @@
       "Effect": "Allow",
       "Action": "iam:PassRole",
       "Resource": [
-        "arn:aws:iam::<ACCOUNT_ID>:role/bedrock-prompt-evals-job-role-use1"
+        "arn:aws:iam::<ACCOUNT_ID>:role/bedrock-prompt-evals-job-role<NAME_SUFFIX>"
       ],
       "Condition": {
         "StringEquals": {
@@ -79,8 +79,8 @@
         "s3:GetObject"
       ],
       "Resource": [
-        "arn:aws:s3:::bedrock-prompt-evals-output-<ACCOUNT_ID>-use1",
-        "arn:aws:s3:::bedrock-prompt-evals-output-<ACCOUNT_ID>-use1/*"
+        "arn:aws:s3:::bedrock-prompt-evals-output-<ACCOUNT_ID><NAME_SUFFIX>",
+        "arn:aws:s3:::bedrock-prompt-evals-output-<ACCOUNT_ID><NAME_SUFFIX>/*"
       ]
     },
     {

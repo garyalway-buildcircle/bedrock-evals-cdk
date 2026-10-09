@@ -39,7 +39,7 @@ Replace:
 - `<JUDGE_MODEL_ID>` — a stronger model than the one under test. Bare foundation-model ID or
   system profile only, not an application-inference-profile ARN (`docs/setup.md` step 4).
 - `jobName` — ≤63 characters, unique in the account (case-insensitive). Append a unix
-  timestamp; keep the prefix short (`gm-edge-use1-s46-<ts>`).
+  timestamp; keep the prefix short (`example-edge-<ts>`).
 
 Run jobs in `us-east-1` against Claude Sonnet 4.6. Never submit two at once — they throttle
 each other (`docs/setup.md` point 6).
@@ -80,13 +80,14 @@ Redeploy if the datasets have expired.
 Jobs do not call the Bedrock Prompt resource. Each JSONL row's `prompt` field is what the
 model sees.
 
-1. Edit `prompts/$P/system-prompt.txt` and/or `user-message-template.txt`.
-2. `python3 scripts/render-datasets.py $P` — swaps the system-prompt prefix, leaves the
-   untrusted payload alone. `--check` exits non-zero if stale. Does not re-derive payloads
-   from `fixtures/` (those keep the source format; datasets are already normalised). If the
-   output schema changed, update every `referenceResponse` and the matching fixture
-   `expected` together.
-3. `npx cdk deploy` — uploads `datasets/<prompt>/` and updates every Prompt resource.
+1. Edit `prompts/$P/system-prompt.txt`, `user-message-template.txt`, or a fixture. The fixture
+   field named by the template's `{{variable}}` is the untrusted input. `expected` is the reference.
+2. `python3 scripts/render-datasets.py $P` rebuilds `datasets/*.jsonl` from `fixtures/`.
+   `--check` exits non-zero if a dataset does not match the fixtures and the current prompt text,
+   and it writes nothing. Any other flag, including a typo, is an error.
+3. `npx cdk deploy -c modelUnderTestId=... -c nameSuffix=-use1` — uploads `datasets/<prompt>/`
+   and updates every Prompt resource. `temperature` and `maxTokens` come from that prompt's
+   `prompt.json`.
 4. Re-run both jobs, then build the report.
 5. Golden Fail: prompt regression or a bad fixture. Fix the fixture only if its expectation
    is wrong, and say why in `notes`.

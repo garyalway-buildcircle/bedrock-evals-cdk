@@ -6,6 +6,7 @@ import * as iam from "aws-cdk-lib/aws-iam"
 import * as s3 from "aws-cdk-lib/aws-s3"
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment"
 import type { Construct } from "constructs"
+import { discoverPrompts, inputVariableNames, logicalId, validateNameSuffix } from "./prompts"
 
 /**
  * Infra only. One Bedrock Prompt per prompts/ directory, two shared scratch buckets
@@ -13,67 +14,22 @@ import type { Construct } from "constructs"
  * Jobs are not a CloudFormation resource — see docs/runbook.md.
  */
 
-interface PromptDefinition {
-  /** Directory name under prompts/, and the S3 key prefix its datasets deploy under. */
-  id: string
-  /** Absolute path to that directory. */
-  dir: string
-  /** Bedrock Prompt resource name. Defaults to the directory name. */
-  promptName?: string
-  description: string
-}
-
-function discoverPrompts(promptsRoot: string): PromptDefinition[] {
-  return fs
-    .readdirSync(promptsRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => {
-      const dir = path.join(promptsRoot, entry.name)
-      const manifest = path.join(dir, "prompt.json")
-      if (!fs.existsSync(manifest)) {
-        throw new Error(`prompts/${entry.name} has no prompt.json`)
-      }
-      // Spread first: the directory on disk decides the identity, never a key in the manifest.
-      return { ...JSON.parse(fs.readFileSync(manifest, "utf-8")), id: entry.name, dir } as PromptDefinition
-    })
-    .sort((a, b) => a.id.localeCompare(b.id))
-}
-
-/** One {{name}} in the user template is that prompt's untrusted input. Keep in sync with render-datasets.py. */
-const INPUT_VARIABLE = /\{\{([A-Za-z][A-Za-z0-9_]*)\}\}/g
-
-function inputVariableNames(template: string, promptId: string): string[] {
-  const names = [...template.matchAll(INPUT_VARIABLE)].flatMap((match) => (match[1] ? [match[1]] : []))
-  const unique = [...new Set(names)]
-  if (unique.length === 0) {
-    throw new Error(`prompts/${promptId}/user-message-template.txt has no {{variable}} placeholder`)
-  }
-  if (unique.length > 1) {
-    throw new Error(
-      `prompts/${promptId}/user-message-template.txt has multiple placeholders (${unique.join(", ")}); one untrusted input only`,
-    )
-  }
-  return unique
-}
-
-/** CloudFormation logical IDs are alphanumeric only. */
-function logicalId(id: string): string {
-  return id
-    .split(/[^a-zA-Z0-9]+/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join("")
-}
-
 export class EvalHarnessStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props)
 
-    const modelUnderTestId = this.node.tryGetContext("modelUnderTestId") ?? "REPLACE_WITH_ENABLED_MODEL_ID"
+    const modelUnderTestId = this.node.tryGetContext("modelUnderTestId")
+    if (typeof modelUnderTestId !== "string" || modelUnderTestId.trim() === "") {
+      throw new Error("Pass -c modelUnderTestId=<the Bedrock model id you enabled>. See docs/setup.md.")
+    }
 
     // Bucket and role names are global. A second region needs -c nameSuffix=...; changing a
     // suffix on a live stack replaces the buckets and deletes their objects.
-    const nameSuffix = this.node.tryGetContext("nameSuffix") ?? ""
+    const rawSuffix = this.node.tryGetContext("nameSuffix") ?? ""
+    if (typeof rawSuffix !== "string") {
+      throw new Error("nameSuffix must be a string, for example -c nameSuffix=-use1")
+    }
+    const nameSuffix = validateNameSuffix(rawSuffix)
 
     // Deterministic names so IAM policies can pin exact ARNs.
     const expireScratch: s3.LifecycleRule[] = [
@@ -158,7 +114,7 @@ export class EvalHarnessStack extends cdk.Stack {
               },
             },
             inferenceConfiguration: {
-              text: { temperature: 0, maxTokens: 4000 },
+              text: { temperature: definition.temperature, maxTokens: definition.maxTokens },
             },
           },
         ],

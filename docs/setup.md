@@ -42,8 +42,12 @@ If this returns nothing, bootstrap did not complete, and `cdk deploy` will fail 
 
 ## 3. Swap to the steady-state policy
 
-Copy `iam/steady-state-policy.json` to `iam/steady-state-policy.local.json` the same way. This is
-what stays attached long-term. `cdk deploy` and `cdk destroy` only need `sts:AssumeRole` on four of
+Copy `iam/steady-state-policy.json` to `iam/steady-state-policy.local.json` the same way. Replace
+`<ACCOUNT_ID>`, `<REGION>`, and `<NAME_SUFFIX>`. `<NAME_SUFFIX>` is the same string as
+`-c nameSuffix` at deploy, including the leading hyphen. The us-east-1 deploy in `docs/runbook.md`
+uses `-use1`, so the role is `bedrock-prompt-evals-job-role-use1` and the output bucket is
+`bedrock-prompt-evals-output-<ACCOUNT_ID>-use1`. An unsuffixed stack uses an empty `<NAME_SUFFIX>`.
+This policy is what stays attached long-term. `cdk deploy` and `cdk destroy` only need `sts:AssumeRole` on four of
 the bootstrap-created roles — the CLI does the CloudFormation work through the assumed
 `deploy-role`, not the caller's own permissions — plus direct Bedrock permissions for submitting
 and reading evaluation jobs.
@@ -90,11 +94,11 @@ The stack can run in more than one region at once. Three things are global and n
 2. **Bootstrap is per-region.** Repeat step 2 for the new region. A missing bootstrap presents as
    `sts:AssumeRole ... AccessDenied` on `cdk-hnb659fds-deploy-role-<ACCOUNT_ID>-<REGION>`, which
    reads like a permissions problem but means the role does not exist yet.
-3. **The steady-state policy is per-region.** Its `AssumeCdkDeployRoles`, evaluation-job, prompt and
-   CloudFormation ARNs all embed `<REGION>`. Add the second region's ARNs. `PassEvalJobRoleToBedrock`
-   and `ReadEvaluationResults` already list the `-use1` names; add any other suffix you invent.
-   Without those grants the deploying identity cannot submit jobs or read results in the new
-   region.
+3. **The steady-state policy is per-region and per-suffix.** Its `AssumeCdkDeployRoles`,
+   evaluation-job, prompt and CloudFormation ARNs all embed `<REGION>`. Add the second region's
+   ARNs. `PassEvalJobRoleToBedrock` and `ReadEvaluationResults` embed `<NAME_SUFFIX>` once. A second
+   suffix needs a second ARN in each of those statements, or the deploying identity cannot submit
+   jobs or read results for that deployment.
 
 ## 4. Enable Bedrock model access, and pick models that actually work
 
@@ -172,13 +176,15 @@ Prefer a bare model ID until you have confirmed the model requires a profile.
 ## 5. Deploy
 
 ```bash
-AWS_PROFILE=<your-profile> AWS_REGION=<your-region> npx cdk deploy \
-  -c modelUnderTestId=<the model ID from step 4>
+AWS_PROFILE=<your-profile> AWS_REGION=us-east-1 npx cdk deploy \
+  -c modelUnderTestId=<the model ID from step 4> \
+  -c nameSuffix=-use1
 ```
 
-Omitting `-c modelUnderTestId=...` deploys a placeholder string that fails CloudFormation template
-validation. It's a warning rather than a hard failure, but fix it before relying on the deployed
-Prompt resource.
+`<NAME_SUFFIX>` in the steady-state policy has to be this same `-use1`. Omitting
+`-c modelUnderTestId=...` fails at synth. The stack does not deploy a placeholder model id.
+`npm run deploy` and `npm run destroy` are plain `cdk deploy` and `cdk destroy`. They still need
+the context flags above, and destroy asks for confirmation.
 
 Note the `Outputs`: `DatasetBucketName`, `OutputBucketName`, `EvalJobRoleArn`, and one
 `PromptArn<Name>` per directory under `prompts/`.

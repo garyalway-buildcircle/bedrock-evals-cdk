@@ -1,7 +1,7 @@
 {
   "app": "npx ts-node --prefer-ts-exts bin/app.ts",
   "watch": {
-    "include": ["bin/**", "lib/**"],
+    "include": ["bin/**", "lib/**", "prompts/**"],
     "exclude": ["node_modules", "cdk.out"]
   },
   "context": {

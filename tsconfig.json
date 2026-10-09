@@ -11,5 +11,5 @@
     "outDir": "cdk.out/ts",
     "noUncheckedIndexedAccess": true
   },
-  "include": ["bin", "lib"]
+  "include": ["bin", "lib", "test"]
 }

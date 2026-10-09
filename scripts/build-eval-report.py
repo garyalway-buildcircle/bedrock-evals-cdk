@@ -12,6 +12,7 @@ import html
 import json
 import subprocess
 import sys
+import tempfile
 import webbrowser
 from pathlib import Path
 
@@ -44,13 +45,23 @@ def extract_transcript(prompt):
     return before_end.rsplit("<<<UNTRUSTED_CONTENT>>>", 1)[1].strip()
 
 
+def report_category(folder_name):
+    """golden and edge-case keep the report's existing section names. Any other set uses its directory name."""
+    if folder_name == "golden":
+        return "golden"
+    if folder_name == "edge-case":
+        return "edge"
+    return folder_name
+
+
 def load_fixture_metadata(prompt_root):
     meta = {}
-    for folder, category in [("fixtures/golden", "golden"), ("fixtures/edge-case", "edge")]:
-        d = prompt_root / folder
-        if not d.exists():
-            continue
-        for fp in d.glob("*.json"):
+    fixtures = prompt_root / "fixtures"
+    if not fixtures.is_dir():
+        return meta
+    for folder in sorted(p for p in fixtures.iterdir() if p.is_dir()):
+        category = report_category(folder.name)
+        for fp in folder.glob("*.json"):
             if fp.name == "index.json":
                 continue
             fx = json.loads(fp.read_text())
@@ -72,14 +83,51 @@ def load_set_leads(prompt_root):
     """Section leads come from each set's fixtures/<set>/index.json, so a new prompt
     describes its own sets without this script knowing what they test."""
     leads = dict(SET_LEAD_FALLBACKS)
-    for folder, key in [("fixtures/golden", "golden"), ("fixtures/edge-case", "edge")]:
-        idx = prompt_root / folder / "index.json"
+    fixtures = prompt_root / "fixtures"
+    if not fixtures.is_dir():
+        return leads
+    for folder in sorted(p for p in fixtures.iterdir() if p.is_dir()):
+        idx = folder / "index.json"
         if not idx.exists():
             continue
         description = json.loads(idx.read_text()).get("description", "").strip()
         if description:
-            leads[key] = description
+            leads[report_category(folder.name)] = description
     return leads
+
+
+def output_keys_from_pages(pages):
+    """Every *_output.jsonl key across list-objects pages, in listing order."""
+    keys = []
+    for listing in pages:
+        for obj in listing.get("Contents") or []:
+            key = obj.get("Key", "")
+            if key.endswith("_output.jsonl"):
+                keys.append(key)
+    return keys
+
+
+def list_output_keys(bucket, prefix):
+    """Page list-objects-v2 explicitly. The CLI's own pager is turned off so a truncated page is not dropped."""
+    pages = []
+    token = None
+    while True:
+        cmd = ["--no-paginate", "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix]
+        if token:
+            cmd.extend(["--continuation-token", token])
+        listing = aws_json(*cmd)
+        pages.append(listing)
+        if not listing.get("IsTruncated"):
+            break
+        token = listing.get("NextContinuationToken")
+        if not token:
+            break
+    return output_keys_from_pages(pages)
+
+
+def json_for_html(value):
+    """JSON for a <script> tag. Escaping < stops a model response containing </script> from closing the tag."""
+    return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
 def fetch_job_results(job_arn):
@@ -96,16 +144,22 @@ def fetch_job_results(job_arn):
     job_id = job_arn.rsplit("/", 1)[-1]
     search_prefix = f"{prefix.rstrip('/')}/{job_name}/{job_id}/models/"
 
-    listing = aws_json("s3api", "list-objects-v2", "--bucket", bucket, "--prefix", search_prefix)
-    keys = [obj["Key"] for obj in listing.get("Contents", []) if obj["Key"].endswith("_output.jsonl")]
+    keys = list_output_keys(bucket, search_prefix)
     if not keys:
         print(f"warning: no *_output.jsonl found for job {job_arn} under s3://{bucket}/{search_prefix}", file=sys.stderr)
         return None
 
-    tmp_path = Path(f"/tmp/{job_id}_output.jsonl")
-    subprocess.run(["aws", "s3", "cp", f"s3://{bucket}/{keys[0]}", str(tmp_path)], check=True, capture_output=True)
-    rows = load_jsonl(tmp_path)
-    tmp_path.unlink()
+    rows = []
+    with tempfile.TemporaryDirectory(prefix=f"eval-report-{job_id}-") as tmp:
+        for index, key in enumerate(keys):
+            dest = Path(tmp) / f"{index}.jsonl"
+            subprocess.run(
+                ["aws", "s3", "cp", f"s3://{bucket}/{key}", str(dest)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            rows.extend(load_jsonl(dest))
 
     return {"job_name": job_name, "model_id": model_id, "rows": rows}
 
@@ -120,8 +174,20 @@ def match_fixture(prompt, datasets, row_index):
     marker = extract_transcript(prompt)
     for row in datasets:
         if extract_transcript(row["prompt"]) == marker:
-            return row["fixtureId"], row.get("referenceResponse", "")
-    return f"unknown-fixture-{row_index}", ""
+            return row["fixtureId"], row.get("referenceResponse", ""), row.get("category", "")
+    return f"unknown-fixture-{row_index}", "", ""
+
+
+def category_for(fixture_id, dataset_category, fixture_meta):
+    """Prefer the fixture file's set. Fall back to the dataset row so a missing fixture file still renders."""
+    meta_category = fixture_meta.get(fixture_id, {}).get("category")
+    if meta_category:
+        return meta_category
+    if dataset_category == "edge-case":
+        return "edge"
+    if dataset_category:
+        return dataset_category
+    return "unknown"
 
 
 def metrics_for(row):
@@ -129,13 +195,34 @@ def metrics_for(row):
 
     Metric names are whatever the eval-job template asked for, and they differ per prompt, so
     nothing here may hardcode one. A score with no metricName (older runs predate the field)
-    is keyed "Score" so the run still renders rather than dropping out of a comparison."""
+    is keyed "Score" so the run still renders rather than dropping out of a comparison.
+    A row with no scores still renders, as a Fail, instead of aborting the report."""
+    result = row.get("automatedEvaluationResult") if isinstance(row, dict) else None
+    scores = result.get("scores") if isinstance(result, dict) else None
+    if not isinstance(scores, list) or not scores:
+        return {"Score": {"result": "Fail", "explanation": "This row has no automatedEvaluationResult.scores."}}
     out = {}
-    for score in row["automatedEvaluationResult"]["scores"]:
+    for score in scores:
+        if not isinstance(score, dict):
+            continue
         name = score.get("metricName") or "Score"
         details = score.get("evaluatorDetails") or [{}]
-        out[name] = {"result": score.get("result"), "explanation": details[0].get("explanation", "")}
+        explanation = ""
+        if isinstance(details, list) and details and isinstance(details[0], dict):
+            explanation = details[0].get("explanation", "")
+        out[name] = {"result": score.get("result") or "Fail", "explanation": explanation}
+    if not out:
+        return {"Score": {"result": "Fail", "explanation": "This row has no readable scores."}}
     return out
+
+
+def model_response(row):
+    """The generator text, or empty when Bedrock omitted modelResponses. Missing data must not abort the report."""
+    responses = row.get("modelResponses") if isinstance(row, dict) else None
+    if not isinstance(responses, list) or not responses or not isinstance(responses[0], dict):
+        return ""
+    response = responses[0].get("response")
+    return response if isinstance(response, str) else ""
 
 
 def build_cases(job_results, datasets, fixture_meta):
@@ -148,14 +235,20 @@ def build_cases(job_results, datasets, fixture_meta):
     for result in job_results:
         matched = []
         for index, row in enumerate(result["rows"], start=1):
-            fid, ref = match_fixture(row["inputRecord"]["prompt"], datasets, index)
-            category = fixture_meta.get(fid, {}).get("category", "unknown")
-            matched.append((fid, category, ref, row))
+            input_record = row.get("inputRecord") if isinstance(row, dict) else None
+            prompt = input_record.get("prompt") if isinstance(input_record, dict) else None
+            if not isinstance(prompt, str):
+                matched.append((f"unknown-fixture-{index}", "unknown", "", row if isinstance(row, dict) else {}))
+                continue
+            fid, ref, dataset_category = match_fixture(prompt, datasets, index)
+            matched.append((fid, category_for(fid, dataset_category, fixture_meta), ref, row))
 
-        if all(fid.startswith("unknown-fixture") for fid, *_ in matched):
+        unknown = [fid for fid, *_ in matched if str(fid).startswith("unknown-fixture")]
+        if unknown:
             raise SystemExit(
-                f"{result['job_name']}: no row matched a fixture in this prompt's datasets — "
-                "wrong --prompt for these jobs?"
+                f"{result['job_name']}: {len(unknown)} of {len(matched)} row(s) did not match a dataset fixture "
+                f"({', '.join(unknown)}). Those rows would be missing from the report. "
+                "Pass the --prompt these jobs were run for."
             )
 
         job_run_number = {}
@@ -180,7 +273,7 @@ def build_cases(job_results, datasets, fixture_meta):
             cases[fid]["versions"][version_key] = {
                 "model": result["model_id"],
                 "jobName": result["job_name"],
-                "response": row["modelResponses"][0]["response"],
+                "response": model_response(row),
                 "metrics": metrics_for(row),
             }
     return cases
@@ -324,6 +417,7 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
   <p class="lead">__EDGE_LEAD__</p>
   <div id="edge-cases"></div>
 </section>
+<div id="extra-sets"></div>
 <footer class="page">Generated by scripts/build-eval-report.py from live Bedrock evaluation job results.</footer>
 <script id="eval-data" type="application/json">__DATA__</script>
 <script id="eval-metrics" type="application/json">__METRICS__</script>
@@ -351,9 +445,13 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
     return Array.from({ length: maxRun }, (_, i) => 'run' + (i + 1));
   }
 
+  const golden = cases.filter(c => c.category === 'golden');
+  const edge = cases.filter(c => c.category === 'edge');
+  const other = cases.filter(c => c.category !== 'golden' && c.category !== 'edge');
   document.getElementById('meta-row').innerHTML =
-    `<span>Golden: <b>${cases.filter(c => c.category === 'golden').length}</b> fixtures</span>` +
-    `<span>Edge-case: <b>${cases.filter(c => c.category === 'edge').length}</b> fixtures</span>`;
+    `<span>Golden: <b>${golden.length}</b> fixtures</span>` +
+    `<span>Edge-case: <b>${edge.length}</b> fixtures</span>` +
+    (other.length ? `<span>Other: <b>${other.length}</b> fixtures</span>` : '');
 
   function progCard(title, list, metric) {
     const versionKeys = versionKeysFor(list);
@@ -368,17 +466,18 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
       const arrow = i < steps.length - 1 ? '<div class="prog-arrow">&rarr;</div>' : '';
       return `<div class="prog-step">${inner}</div>${arrow}`;
     }).join('');
-    return `<div class="prog-card"><div class="prog-title">${title}</div><div class="prog-track">${html}</div></div>`;
+    return `<div class="prog-card"><div class="prog-title">${esc(title)}</div><div class="prog-track">${html}</div></div>`;
   }
 
   // One track per metric per set. Metric names come from the results, so a prompt with its own
   // judge metrics reports on those without this file knowing anything about them. A metric no run
   // actually rated draws nothing rather than an empty track.
-  const golden = cases.filter(c => c.category === 'golden');
-  const edge = cases.filter(c => c.category === 'edge');
   const rated = (list, m) => list.some(c => Object.values(c.versions).some(v => v.metrics[m]));
+  const extraCategories = [...new Set(other.map(c => c.category))];
+  const groups = [['Golden set', golden], ['Edge-case set', edge]]
+    .concat(extraCategories.map(category => [category, other.filter(c => c.category === category)]));
   document.getElementById('progression').innerHTML =
-    [['Golden set', golden], ['Edge-case set', edge]]
+    groups
       .flatMap(([label, list]) => METRICS.filter(m => rated(list, m)).map(m => progCard(`${label}: ${m}`, list, m)))
       .join('');
 
@@ -388,7 +487,10 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
       <div class="version-block">
         <div class="version-head">
           <span class="vname">${esc(v.jobName)}</span>
-          ${Object.entries(v.metrics).map(([m, s]) => `<span class="pill ${s.result}">${esc(m)}: ${s.result}</span>`).join('')}
+          ${Object.entries(v.metrics).map(([m, s]) => {
+            const resultClass = s.result === 'Pass' ? 'Pass' : 'Fail';
+            return `<span class="pill ${resultClass}">${esc(m)}: ${esc(s.result)}</span>`;
+          }).join('')}
           <span class="vmodel">${esc(v.model)}</span>
         </div>
         <div class="grid-2">
@@ -435,8 +537,12 @@ HTML_TEMPLATE = r"""<title>__TITLE__</title>
       </details>`;
   }
 
-  document.getElementById('golden-cases').innerHTML = cases.filter(c => c.category === 'golden').map(caseHtml).join('');
-  document.getElementById('edge-cases').innerHTML = cases.filter(c => c.category === 'edge').map(caseHtml).join('');
+  document.getElementById('golden-cases').innerHTML = golden.map(caseHtml).join('');
+  document.getElementById('edge-cases').innerHTML = edge.map(caseHtml).join('');
+  document.getElementById('extra-sets').innerHTML = extraCategories.map(category => {
+    const list = other.filter(c => c.category === category);
+    return `<section class="dataset"><h2>${esc(category)}</h2><p class="lead">Rows from fixtures/${esc(category)}.</p><div>${list.map(caseHtml).join('')}</div></section>`;
+  }).join('');
 })();
 </script>
 """
@@ -479,9 +585,9 @@ def main():
         title = f"{label} Eval Report"
 
     page = (HTML_TEMPLATE
-            .replace("__DATA__", json.dumps(ordered))
-            .replace("__METRICS__", json.dumps(metric_names(ordered)))
-            .replace("__TITLE__", title)
+            .replace("__DATA__", json_for_html(ordered))
+            .replace("__METRICS__", json_for_html(metric_names(ordered)))
+            .replace("__TITLE__", html.escape(title))
             .replace("__GOLDEN_LEAD__", html.escape(set_leads["golden"]))
             .replace("__EDGE_LEAD__", html.escape(set_leads["edge"])))
 

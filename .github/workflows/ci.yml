@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: python3 -m unittest discover -s test -v
+      - run: npx ts-node test/prompts.test.ts
+      - run: python3 scripts/render-datasets.py --check
+      - run: npx cdk synth -c modelUnderTestId=us.anthropic.claude-sonnet-4-6 -c nameSuffix=-use1

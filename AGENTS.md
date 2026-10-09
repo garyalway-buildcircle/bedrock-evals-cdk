@@ -35,7 +35,7 @@ prompt only.
 
 ## Iterating
 
-Edit the prompt text → `python3 scripts/render-datasets.py <prompt>` → redeploy → run both
+Edit the prompt text or a fixture → `python3 scripts/render-datasets.py <prompt>` → redeploy → run both
 sets **one at a time** → `scripts/build-eval-report.py --prompt <prompt>`. Skipping the
 re-render scores the previous wording. Full loop: `docs/runbook.md`.
 

@@ -1,4 +1,6 @@
 {
   "promptName": "example",
-  "description": "Placeholder prompt. Replace this directory with a real prompt before sharing results."
+  "description": "Placeholder prompt. Replace this directory with a real prompt before sharing results.",
+  "temperature": 0,
+  "maxTokens": 4000
 }

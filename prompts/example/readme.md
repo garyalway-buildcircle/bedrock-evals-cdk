@@ -12,5 +12,5 @@ one beside it (`docs/adding-a-prompt.md`).
 
 `label` is `positive`, `negative`, or `neutral`. `reason` is one sentence and does not copy the note.
 
-Cases: `fixtures/`. After a prompt edit: `python3 scripts/render-datasets.py example`, then
-`docs/runbook.md`.
+Cases: `fixtures/`. After a prompt or fixture edit: `python3 scripts/render-datasets.py example`,
+then `docs/runbook.md`.

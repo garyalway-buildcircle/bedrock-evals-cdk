@@ -6,7 +6,7 @@ is a row in the root `README.md` table.
 ```
 prompts/<prompt>/
   readme.md                    what this prompt returns
-  prompt.json                  promptName + description
+  prompt.json                  description (required); optional promptName, temperature, maxTokens
   system-prompt.txt
   user-message-template.txt    one {{variable}} — this prompt's untrusted input
   docs/*.md                    the rules in plain language
@@ -19,18 +19,21 @@ prompts/<prompt>/
 `<prompt>` is also the S3 prefix: `datasets/<prompt>/` and `results/<prompt>/`.
 
 1. `mkdir -p prompts/<prompt>/{docs,datasets,fixtures,eval-jobs}` and write `prompt.json`.
+   `description` is required. `temperature` defaults to `0` and `maxTokens` to `4000` when omitted;
+   set them in `prompt.json` when this prompt needs different inference settings.
 2. Write the two `.txt` files. The user template has exactly one `{{variable}}` (name it for
    the input: `note`, `email`, …). The stack and render-datasets read that name from
    the template.
-3. Write fixtures, then matching JSONL rows
-   (`prompt`, `referenceResponse`, `category`, `fixtureId`). `prompt` is system text, a newline,
-   and the user template with the wrapped untrusted input substituted in.
-4. `python3 scripts/render-datasets.py <prompt>` (and `--check` later).
+3. Write fixtures. Each one has `id`, an `expected` object, and a string field whose name is the
+   template variable. `fixtures/<set>/index.json` lists every fixture file in that set, in row order.
+4. `python3 scripts/render-datasets.py <prompt>` writes `datasets/<set>.jsonl` from those fixtures.
+   `--check` later fails if the JSONL has drifted. Do not hand-edit the JSONL.
 5. Copy `prompts/example/eval-jobs/*.json` and rewrite the judge metrics for this
    output schema. `ratingScale[].definition` must stay under 100 characters (`docs/runbook.md`).
    Point the S3 URIs at `datasets/<prompt>/<set>.jsonl` and `results/<prompt>/<set>/`. Keep
    `jobName` short enough for a timestamp (63-character Bedrock limit).
-6. `npx cdk deploy`, run both jobs, build the report with `--prompt <prompt>`.
+6. `npx cdk deploy -c modelUnderTestId=... -c nameSuffix=-use1`, run both jobs, build the report
+   with `--prompt <prompt>`.
 7. Write `readme.md` and add the table row in the root `README.md`.
 
 Judge metrics are per-prompt. The report reads metric names from the results and section leads
